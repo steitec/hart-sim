@@ -106,7 +106,7 @@ def test_tcp_session_and_command0(server):
     c.close()
 
 
-def test_udp_session_and_command3(server):
+def test_udp_session_and_command0(server):
     c = Udp(server.port)
     open_session(c)
     header, body = c.request(hartip.PDU, 2, cmd0())
@@ -155,7 +155,7 @@ def test_keep_alive_refreshes_session(server):
     c = Tcp(server.port)
     open_session(c, ms=1000)
     for seq in range(4):
-        time.sleep(0.5)
+        time.sleep(0.3)
         header, _ = c.request(hartip.KEEP_ALIVE, seq)
         assert header.msg_type == hartip.RESPONSE
     c.close()
@@ -287,3 +287,89 @@ def test_stop_closes_connections_and_ports():
     u.bind(("127.0.0.1", port))  # UDP port is free again
     u.close()
     srv.stop()  # idempotent
+
+
+def closed_by_server(sock, timeout=TIMEOUT):
+    sock.settimeout(timeout)
+    try:
+        return sock.recv(1) == b""
+    except ConnectionError:
+        return True
+
+
+def test_tcp_closed_after_status_15_and_error_16():
+    srv = start([make_device()], max_sessions=1)
+    try:
+        a = Tcp(srv.port)
+        open_session(a)
+        b = Tcp(srv.port)
+        header, _ = b.request(hartip.SESSION_INITIATE, 1, init_body())
+        assert header.status == 15
+        assert closed_by_server(b.sock)
+        c = Tcp(srv.port)
+        header, _ = c.request(hartip.PDU, 1, cmd0())
+        assert header.msg_type == hartip.ERROR and header.status == 16
+        assert closed_by_server(c.sock)
+        for x in (a, b, c):
+            x.close()
+    finally:
+        srv.stop()
+
+
+def test_tcp_without_session_times_out(monkeypatch, server):
+    import hart_sim.server as module
+    monkeypatch.setattr(module, "_READ_TIMEOUT", 0.5)
+    s = socket.create_connection(("127.0.0.1", server.port), timeout=TIMEOUT)
+    assert closed_by_server(s)
+    s.close()
+
+
+def test_tcp_closed_when_session_expired_at_request():
+    srv = start([make_device()])
+    try:
+        c = Tcp(srv.port)
+        open_session(c, ms=1000)
+        time.sleep(1.2)
+        try:
+            header, _ = c.request(hartip.PDU, 1, cmd0())
+            assert header.msg_type == hartip.ERROR
+        except ConnectionError:
+            pass
+        assert closed_by_server(c.sock)
+        c.close()
+    finally:
+        srv.stop()
+
+
+@pytest.mark.parametrize("raw", [
+    hartip.encode_message(hartip.REQUEST, hartip.SESSION_INITIATE, 1, b"\x01\x00"),
+    hartip.encode_message(hartip.RESPONSE, hartip.KEEP_ALIVE, 1),
+    hartip.encode_message(hartip.REQUEST, 9, 1),
+])
+def test_malformed_requests_close_tcp_and_drop_udp(server, raw):
+    tcp = Tcp(server.port)
+    open_session(tcp)
+    tcp.sock.sendall(raw)
+    assert closed_by_server(tcp.sock)
+    tcp.close()
+    udp = Udp(server.port)
+    open_session(udp)
+    udp.sock.sendto(raw, ("127.0.0.1", server.port))
+    udp.sock.settimeout(0.5)
+    with pytest.raises(socket.timeout):
+        udp.read()
+    udp.sock.settimeout(TIMEOUT)
+    assert udp.request(hartip.PDU, 2, cmd0())[0].msg_type == hartip.RESPONSE
+    udp.close()
+
+
+def test_unknown_message_id_does_not_refresh_timer(server):
+    udp = Udp(server.port)
+    open_session(udp, ms=1000)
+    for _ in range(3):
+        time.sleep(0.4)
+        udp.sock.sendto(hartip.encode_message(hartip.REQUEST, 9, 1), ("127.0.0.1", server.port))
+    time.sleep(0.2)
+    header, _ = udp.request(hartip.PDU, 2, cmd0())
+    assert header.msg_type == hartip.ERROR and header.status == 16
+    udp.close()

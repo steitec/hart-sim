@@ -6,6 +6,7 @@ Lock order: the server's session lock is never held while calling into a Device
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import socketserver
@@ -22,6 +23,7 @@ STATUS_ALL_SESSIONS_IN_USE = 15
 STATUS_ACCESS_RESTRICTED = 16
 _READ_TIMEOUT = 5.0  # a message that started must finish within this
 _POLL = 0.2
+_log = logging.getLogger(__name__)
 
 
 class Server:
@@ -127,21 +129,27 @@ class Server:
             self._timeouts.pop(key, None)
 
     def _handle_message(self, key, header: hartip.Header, body: bytes) -> tuple[bytes | None, bool]:
-        """Process one request. Returns (response or None, close_session_afterwards)."""
-        if header.msg_type != hartip.REQUEST:
-            return None, False
+        """Process one request. Returns (response or None, close_afterwards).
+
+        close_afterwards: the TCP connection must be closed (UDP ignores it: the
+        datagram is simply dropped or answered). True for malformed input, for
+        status 15 / error 16 replies and after Session Close.
+        """
+        if header.msg_type != hartip.REQUEST or header.msg_id not in (
+                hartip.SESSION_INITIATE, hartip.SESSION_CLOSE, hartip.KEEP_ALIVE, hartip.PDU):
+            return None, True
         seq = header.sequence
         now = time.monotonic()
         if header.msg_id == hartip.SESSION_INITIATE:
             if len(body) != 5:
-                return None, False
+                return None, True
             milliseconds = max(struct.unpack(">I", body[1:5])[0], MIN_INACTIVITY_MS)
             body = body[:1] + struct.pack(">I", milliseconds)
             with self._lock:
                 self._purge(now)
                 if key not in self._sessions and len(self._sessions) >= self.max_sessions:
                     return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body,
-                                                 STATUS_ALL_SESSIONS_IN_USE), False
+                                                 STATUS_ALL_SESSIONS_IN_USE), True
                 self._sessions[key] = now + milliseconds / 1000.0
                 self._timeouts[key] = milliseconds / 1000.0
             return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body), False
@@ -152,7 +160,7 @@ class Server:
                 self._sessions[key] = now + self._timeouts[key]
         if not active:
             return hartip.encode_message(hartip.ERROR, header.msg_id, seq, b"",
-                                         STATUS_ACCESS_RESTRICTED), False
+                                         STATUS_ACCESS_RESTRICTED), True
         if header.msg_id == hartip.KEEP_ALIVE:
             return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq), False
         if header.msg_id == hartip.SESSION_CLOSE:
@@ -195,7 +203,7 @@ class Server:
             except OSError:
                 pass
             except Exception:  # never let one datagram kill the UDP thread
-                continue
+                _log.debug("error handling UDP datagram from %s", addr, exc_info=True)
 
 
 class _TcpServer(socketserver.ThreadingTCPServer):
@@ -250,6 +258,8 @@ class _Handler(socketserver.BaseRequestHandler):
             self._serve(owner, key)
         except (OSError, _Closed, hartip.HartIPError):
             pass
+        except Exception:  # close this connection quietly, keep the server up
+            _log.debug("error handling TCP connection", exc_info=True)
         finally:
             owner._drop(key)
 
@@ -272,14 +282,18 @@ class _Handler(socketserver.BaseRequestHandler):
         return b"".join(chunks)
 
     def _serve(self, owner: Server, key) -> None:
+        had_session = False
         while not owner._stopping.is_set():
             deadline = owner._deadline(key)
-            if deadline is None:
-                idle = None
-            else:
+            if deadline is not None:
+                had_session = True
                 idle = deadline - time.monotonic()
                 if idle <= 0:
                     raise _Closed
+            elif had_session:  # expired or purged
+                raise _Closed
+            else:  # no Session Initiate yet
+                idle = _READ_TIMEOUT
             header = hartip.decode_header(self._read(hartip.HEADER_SIZE, idle))
             body = self._read(header.byte_count - hartip.HEADER_SIZE, _READ_TIMEOUT)
             reply, close = owner._handle_message(key, header, body)
