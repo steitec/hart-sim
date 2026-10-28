@@ -122,3 +122,10 @@ def test_readme_profile_example_loads(tmp_path):
     path = tmp_path / "readme.yaml"
     path.write_text(block, encoding="utf-8")
     assert load_profile(str(path)).tag == "PT-101"
+
+
+def test_non_utf8_profile_file_is_a_profile_error(tmp_path):
+    path = tmp_path / "bad.yaml"
+    path.write_bytes(b"tag: \xff\xfe\n")
+    with pytest.raises(ProfileError, match="UTF-8"):
+        load_profile(str(path))

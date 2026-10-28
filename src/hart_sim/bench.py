@@ -45,6 +45,8 @@ class Bench:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
         except OSError as exc:
             raise BenchError(f"{path}: {exc.strerror or exc}") from None
+        except UnicodeDecodeError:
+            raise BenchError(f"{path}: not a UTF-8 text file") from None
         except yaml.YAMLError as exc:
             raise BenchError(f"{path}: invalid YAML: {exc}") from None
         return cls.from_dict(data, base=path.parent)

@@ -243,6 +243,10 @@ def load_profile(name_or_path: str | Path, overrides: dict | None = None) -> Pro
             )
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ProfileError(f"{path}: {exc.strerror or exc}") from None
+    except UnicodeDecodeError:
+        raise ProfileError(f"{path}: not a UTF-8 text file") from None
     except yaml.YAMLError as exc:
         raise ProfileError(f"{path}: invalid YAML: {exc}") from None
     if not isinstance(raw, dict):

@@ -68,3 +68,10 @@ def test_context_manager_uses_free_ports():
     with Bench.from_yaml(PLANT) as b:
         assert b.server.port not in (0, 5094)
         assert b.control_port not in (0, 5095)
+
+
+def test_non_utf8_bench_file_is_a_bench_error(tmp_path):
+    path = tmp_path / "bench.yaml"
+    path.write_bytes(b"devices:\n  - profile: \xff\xfe\n")
+    with pytest.raises(BenchError, match="UTF-8"):
+        Bench.from_yaml(path)
