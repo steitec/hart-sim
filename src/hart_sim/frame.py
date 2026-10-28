@@ -67,6 +67,18 @@ def pack_float(x: float) -> bytes:
         raise ValueError("float out of single-precision range") from exc
 
 
+def pack_float_or_nan(x: float) -> bytes:
+    """Like pack_float, but a value that does not fit a single (|x| > 3.4e38) becomes NaN.
+
+    For values a device holds (process variables, loop current, percent): the device
+    reports "not available" instead of failing the command.
+    """
+    try:
+        return pack_float(x)
+    except ValueError:
+        return NAN_BYTES
+
+
 def unpack_float(b: bytes) -> float:
     if len(b) != 4:
         raise ValueError("float must be exactly 4 bytes")

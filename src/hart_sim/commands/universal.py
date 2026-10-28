@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from ..frame import pack_ascii, pack_float, unpack_ascii
+from ..frame import pack_ascii, pack_float_or_nan as pack_float, unpack_ascii
 from . import NoResponse, need, register
 
 

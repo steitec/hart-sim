@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from .. import units
-from ..frame import pack_float, unpack_float
+from ..frame import pack_float_or_nan as pack_float, unpack_float
 from ..process import I_ALARM_HIGH, I_ALARM_LOW
 from . import need, register
 

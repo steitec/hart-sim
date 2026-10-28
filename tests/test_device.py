@@ -142,3 +142,20 @@ def test_config_changed_per_master(dev):
     assert dev.handle(L(True, 38)).response_code == 0
     assert dev.handle(L(True, 1)).device_status & 0x40 == 0
     assert dev.handle(L(False, 1)).device_status & 0x40
+
+
+def test_overflowing_variable_encodes_as_nan_never_raises(dev):
+    # 1e39 is finite but does not fit an IEEE single; bypass the control channel check.
+    dev.damping = 0
+    dev.pv.override(1e39)
+    nan = bytes.fromhex("7fa00000")
+    for number in (1, 2, 3, 9):
+        data = b"\x00\x01" if number == 9 else b""
+        r = dev.handle(Frame(Address.long(*dev.unique_id), number, data))
+        assert r is not None and r.response_code == 0, number
+    assert dev.handle(Frame(Address.long(*dev.unique_id), 1)).data[1:5] == nan
+    assert dev.handle(Frame(Address.long(*dev.unique_id), 3)).data[5:9] == nan
+    dev.pv.override(-1e39)
+    assert dev.handle(Frame(Address.long(*dev.unique_id), 1)).data[1:5] == nan
+    dev.pv.override(400.0)
+    assert dev.handle(Frame(Address.long(*dev.unique_id), 1)).data[1:5] != nan

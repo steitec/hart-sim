@@ -134,3 +134,9 @@ def test_control_server_reuse_address_matches_platform():
     from hart_sim import control, server
     assert control._Server.allow_reuse_address == (os.name != "nt")
     assert server._TcpServer.allow_reuse_address == (os.name != "nt")
+
+
+def test_control_rejects_overflowing_value(bench):
+    for bad in (1e39, -1e39, 3.5e38):
+        assert ctl(bench, device="PT-101", set={"pv": bad})["ok"] is False
+    assert ctl(bench, device="PT-101", set={"pv": 3.4e38}) == {"ok": True}

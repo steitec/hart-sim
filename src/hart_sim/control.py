@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .bench import Bench
 
 _SETTABLE = ("pv", "sv")
+_MAX_VALUE = 3.4e38  # keeps pv/sv inside what an IEEE single can carry
 _MAX_LINE = 65536  # bytes per request line, including the newline
 
 
@@ -166,6 +167,9 @@ class ControlServer:
                                       or not isinstance(value, (int, float))
                                       or not math.isfinite(value)):
                 raise ValueError(f"{key}: must be a finite number or null, got {value!r}")
+            if value is not None and abs(value) > _MAX_VALUE:
+                raise ValueError(f"{key}: {value!r} is outside the HART float range "
+                                 f"(|value| <= {_MAX_VALUE:g})")
             parsed[key] = (variable, None if value is None else float(value))
         with device.lock:  # all or nothing, atomic against the HART side
             for variable, value in parsed.values():
