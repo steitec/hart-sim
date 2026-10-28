@@ -82,3 +82,19 @@ def test_closed_connection_raises_harterror(bench):
         bench.server._tcp.close_connections()
         with pytest.raises(HartError):
             client.command(Address.short(1), 0)
+
+
+def test_session_initiate_host_type_on_the_wire(bench):
+    for primary, expected in ((True, 1), (False, 0)):
+        client = connect(bench, primary=primary)
+        sent = []
+        original = client._exchange
+
+        def spy(msg_id, body, timeout, original=original, sent=sent):
+            sent.append((msg_id, body))
+            return original(msg_id, body, timeout)
+
+        client._exchange = spy
+        with client:
+            pass
+        assert sent[0][0] == 0 and sent[0][1][0] == expected

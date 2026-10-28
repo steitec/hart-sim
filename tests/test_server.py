@@ -373,3 +373,25 @@ def test_unknown_message_id_does_not_refresh_timer(server):
     header, _ = udp.request(hartip.PDU, 2, cmd0())
     assert header.msg_type == hartip.ERROR and header.status == 16
     udp.close()
+
+
+def test_host_type_above_one_rejected_without_session(server):
+    c = Tcp(server.port)
+    header, body = c.request(hartip.SESSION_INITIATE, 1, struct.pack(">BI", 2, 30000))
+    assert header.msg_type == hartip.RESPONSE and header.status == 2
+    assert c.sock.recv(1) == b""  # TCP closed
+    c.close()
+    u = Udp(server.port)
+    header, _ = u.request(hartip.SESSION_INITIATE, 1, struct.pack(">BI", 7, 30000))
+    assert header.status == 2
+    header, _ = u.request(hartip.PDU, 2, cmd0())
+    assert header.msg_type == hartip.ERROR and header.status == 16  # no session was created
+    u.close()
+
+
+def test_host_type_zero_and_one_accepted(server):
+    for host_type in (0, 1):
+        u = Udp(server.port)
+        header, body = u.request(hartip.SESSION_INITIATE, 1, struct.pack(">BI", host_type, 30000))
+        assert header.status == 0 and body[0] == host_type
+        u.close()

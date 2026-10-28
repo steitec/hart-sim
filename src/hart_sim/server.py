@@ -19,6 +19,7 @@ from .device import Device
 from .frame import Frame, FrameError
 
 MIN_INACTIVITY_MS = 1000
+STATUS_INVALID_SELECTION = 2
 STATUS_ALL_SESSIONS_IN_USE = 15
 STATUS_ACCESS_RESTRICTED = 16
 _READ_TIMEOUT = 5.0  # a message that started must finish within this
@@ -143,6 +144,9 @@ class Server:
         if header.msg_id == hartip.SESSION_INITIATE:
             if len(body) != 5:
                 return None, True
+            if body[0] > 1:  # Host Type: 0 = secondary, 1 = primary master
+                return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body,
+                                             STATUS_INVALID_SELECTION), True
             milliseconds = max(struct.unpack(">I", body[1:5])[0], MIN_INACTIVITY_MS)
             body = body[:1] + struct.pack(">I", milliseconds)
             with self._lock:

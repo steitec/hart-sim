@@ -78,7 +78,7 @@ class HartIPClient:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.connect((self.host, self.port))
         try:
-            body = bytes([1 if self.primary else 2]) + struct.pack(">I", _DEFAULT_INACTIVITY_MS)
+            body = bytes([1 if self.primary else 0]) + struct.pack(">I", _DEFAULT_INACTIVITY_MS)
             header, _ = self._exchange(hartip.SESSION_INITIATE, body, self.timeout)
             if header.status != 0 or header.msg_type != hartip.RESPONSE:
                 raise HartError(f"session initiate failed, HART-IP status {header.status}")

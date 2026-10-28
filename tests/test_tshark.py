@@ -155,3 +155,21 @@ def test_payloads_of_commands_3_and_35(pcap):
     assert current == pytest.approx(percent, abs=0.5)
     # command 35 request: unit kPa, URV 600.0, LRV 0.0 (IEEE 754 single, big endian)
     assert rows[4][1] == "0c4416000000000000"
+
+
+def test_dissector_decodes_host_type_for_both_masters(tmp_path):
+    log = []
+    with Bench.single("pressure") as bench:
+        for primary in (True, False):
+            client = RecordingClient("127.0.0.1", bench.server.port, timeout=2.0, primary=primary)
+            with client:
+                pass
+            log += client.log
+    path = tmp_path / "masters.pcap"
+    write_pcap(path, log)
+    assert tshark("-r", str(path), "-Y", "_ws.malformed").strip() == ""
+    rows = tshark("-r", str(path), "-Y", "hart_ip.session_init.master_type", "-T", "fields",
+                  "-e", "hart_ip.session_init.master_type").split()
+    assert rows == ["1", "1", "0", "0"]  # request and echo, primary then secondary
+    verbose = tshark("-r", str(path), "-V")
+    assert "Primary Host" in verbose and "Secondary Host" in verbose
