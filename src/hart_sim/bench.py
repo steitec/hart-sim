@@ -34,6 +34,7 @@ class Bench:
         self.server: Server | None = None
         self.control: ControlServer | None = None
         self.control_port = 0
+        self._clients: list = []
 
     # --- construction ---
 
@@ -121,8 +122,25 @@ class Bench:
         self.server, self.control = server, control
         self.control_port = control.port
 
+    def client(self, **kwargs):
+        """A connected HartIPClient for the running bench; closed when the bench stops.
+
+        Keyword arguments (``transport``, ``timeout``, ``primary``) go to HartIPClient.
+        """
+        from .client import HartIPClient
+        if self.server is None:
+            raise BenchError("bench is not running")
+        client = HartIPClient("127.0.0.1" if self.server.host in ("0.0.0.0", "") else self.server.host,
+                              self.server.port, **kwargs)
+        client.open()
+        self._clients.append(client)
+        return client
+
     def stop(self) -> None:
         """Stop server and control channel; safe to call more than once."""
+        clients, self._clients = self._clients, []
+        for client in clients:
+            client.close()
         control, server = self.control, self.server
         self.control = self.server = None
         if control is not None:

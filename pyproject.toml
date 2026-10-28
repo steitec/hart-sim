@@ -41,6 +41,9 @@ dev = ["pytest>=8", "build>=1.2"]
 [project.scripts]
 hart-sim = "hart_sim.cli:main"
 
+[project.entry-points.pytest11]
+hart_sim = "hart_sim.pytest_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
