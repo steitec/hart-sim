@@ -1,0 +1,16 @@
+kind: temperature-transmitter
+manufacturer_id: 0x00FA      # deliberately not a real manufacturer
+device_type: 0xFA02
+device_revision: 1
+tag: TT-201
+long_tag: "Reactor 2 temperature"
+descriptor: "SIM TEMPERATURE"
+min_span: 10
+alarm: high
+pv:
+  unit: degC
+  sensor_limits: [-200, 850]
+  range: [0, 150]            # LRV, URV
+  damping: 1.0               # s
+  source: {type: ramp, start: 20, stop: 80, period: 120}
+sv: {name: terminal temperature, unit: degC, source: {type: constant, value: 24.0}}

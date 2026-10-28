@@ -1,0 +1,16 @@
+kind: pressure-transmitter
+manufacturer_id: 0x00FA      # deliberately not a real manufacturer
+device_type: 0xFA01
+device_revision: 1
+tag: PT-101
+long_tag: "Pump 1 discharge pressure"
+descriptor: "SIM PRESSURE"
+min_span: 10
+alarm: high
+pv:
+  unit: kPa
+  sensor_limits: [-100, 2500]
+  range: [0, 1000]           # LRV, URV
+  damping: 0.5               # s
+  source: {type: sine, offset: 400, amplitude: 50, period: 30}
+sv: {name: sensor temperature, unit: degC, source: {type: constant, value: 23.5}}

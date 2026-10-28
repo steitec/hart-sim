@@ -49,3 +49,6 @@ testpaths = ["tests"]
 filterwarnings = ["error"]
 markers = ["tshark: needs tshark installed (run with -m tshark)"]
 addopts = "-m 'not tshark'"
+
+[tool.setuptools.package-data]
+hart_sim = ["profiles/*.yaml"]
