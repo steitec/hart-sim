@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -46,7 +47,7 @@ def test_serve_requires_one_source(capsys):
 
 
 def test_poll_output(bench, capsys):
-    code, out, _ = run(capsys, "poll", *conn(bench))
+    code, out, _ = run(capsys, "poll", "--max-address", "3", *conn(bench))
     assert code == 0
     assert out.splitlines() == [
         "addr 1  PT-101  pressure-transmitter  id 0x000001",
@@ -55,7 +56,7 @@ def test_poll_output(bench, capsys):
 
 
 def test_poll_udp(bench, capsys):
-    code, out, _ = run(capsys, "poll", "--udp", *conn(bench))
+    code, out, _ = run(capsys, "poll", "--udp", "--max-address", "3", *conn(bench))
     assert code == 0 and "PT-101" in out
 
 
@@ -171,3 +172,46 @@ def test_inject_readme_forms_work_verbatim(bench, capsys):
     assert dev.write_protect is True
     code, _, err = run(capsys, "inject", "PT-101", "write_protect", "on=off", *ctl(bench))
     assert code == 0 and dev.write_protect is False
+
+
+def test_poll_max_address(bench, capsys):
+    code, out, _ = run(capsys, "poll", "--max-address", "1", *conn(bench))
+    assert code == 0 and out.splitlines() == [
+        "addr 1  PT-101  pressure-transmitter  id 0x000001"]
+    with pytest.raises(SystemExit) as exc:
+        main(["poll", "--max-address", "64", *conn(bench)])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("argv", [["poll", "--udp"], ["cmd", "--udp", "--address", "1", "1"]])
+def test_unresolvable_host_is_one_line_exit_2(capsys, argv):
+    code, _, err = run(capsys, *argv, "--host", "no-such-host.invalid")
+    assert code == 2
+    assert err.startswith("hart-sim: error:") and len(err.splitlines()) == 1
+
+
+def test_connection_reset_mid_command_no_traceback(capsys):
+    import socket
+    import struct
+    from hart_sim import hartip
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve():
+        conn_, _ = listener.accept()
+        conn_.recv(13)  # session initiate
+        conn_.sendall(hartip.encode_message(hartip.RESPONSE, 0, 1, struct.pack(">BI", 1, 60000)))
+        conn_.recv(8)   # first PDU header, then reset the connection
+        conn_.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        conn_.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    code, _, err = run(capsys, "cmd", "--address", "1", "1",
+                       "--port", str(listener.getsockname()[1]))
+    assert code in (1, 2)
+    assert err.startswith("hart-sim: error:") and len(err.splitlines()) == 1
+    thread.join(5)
+    listener.close()

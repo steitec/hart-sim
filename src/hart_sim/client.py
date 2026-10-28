@@ -75,8 +75,13 @@ class HartIPClient:
             except OSError as exc:
                 raise HartError(f"cannot connect to {self.host}:{self.port}: {exc}") from exc
         else:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._sock.connect((self.host, self.port))
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.connect((self.host, self.port))
+            except OSError as exc:  # e.g. socket.gaierror for an unknown host name
+                sock.close()
+                raise HartError(f"cannot reach {self.host}:{self.port}: {exc}") from exc
+            self._sock = sock
         try:
             body = bytes([1 if self.primary else 0]) + struct.pack(">I", _DEFAULT_INACTIVITY_MS)
             header, _ = self._exchange(hartip.SESSION_INITIATE, body, self.timeout)
@@ -197,8 +202,12 @@ class HartIPClient:
             raise HartError(f"communication error 0x{frame.response_code:02x}")
         return frame
 
-    def poll(self, addresses: Iterable[int] = range(64)) -> list[DeviceInfo]:
+    def poll(self, addresses: Iterable[int] | None = None,
+             max_address: int = 63) -> list[DeviceInfo]:
+        """Look for devices at polling addresses 0..max_address (or exactly `addresses`)."""
         found = []
+        if addresses is None:
+            addresses = range(max_address + 1)
         for polling in addresses:
             addr = Address.short(polling)
             try:

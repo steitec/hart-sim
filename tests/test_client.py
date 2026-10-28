@@ -98,3 +98,10 @@ def test_session_initiate_host_type_on_the_wire(bench):
         with client:
             pass
         assert sent[0][0] == 0 and sent[0][1][0] == expected
+
+
+def test_poll_max_address(bench):
+    with connect(bench) as client:
+        assert [i.tag for i in client.poll(max_address=1)] == ["PT-101"]
+        assert [i.tag for i in client.poll(max_address=3)] == ["PT-101", "TT-201"]
+        assert [i.tag for i in client.poll([2])] == ["TT-201"]  # addresses= still works

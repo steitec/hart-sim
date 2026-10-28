@@ -28,6 +28,16 @@ def _port(text: str) -> int:
     return port
 
 
+def _polling_address(text: str) -> int:
+    try:
+        number = int(text)
+    except ValueError:
+        number = -1
+    if not 0 <= number <= 63:
+        raise argparse.ArgumentTypeError(f"invalid polling address {text!r} (allowed: 0-63)")
+    return number
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hart-sim",
                                      description="Simulated HART field devices speaking HART-IP.")
@@ -55,6 +65,8 @@ def _parser() -> argparse.ArgumentParser:
                        help=f"control port (default: {CONTROL_PORT}, 0 = any free port)")
 
     poll = commands.add_parser("poll", help="list the devices that answer on the server")
+    poll.add_argument("--max-address", type=_polling_address, default=63, metavar="N",
+                      help="poll addresses 0..N (default: 63)")
     client_args(poll)
 
     cmd = commands.add_parser("cmd", help="send one HART command to a device")
@@ -221,7 +233,7 @@ def _poll(args: argparse.Namespace) -> int:
     client = HartIPClient(args.host, args.port, transport="udp" if args.udp else "tcp")
     try:
         with client:
-            found = client.poll()
+            found = client.poll(max_address=args.max_address)
     except HartError as exc:
         return _error(str(exc))
     for info in found:
@@ -256,10 +268,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "serve":
         return _serve(parser, args)
-    if args.command == "poll":
-        return _poll(args)
-    if args.command == "cmd":
-        return _cmd(parser, args)
+    if args.command in ("poll", "cmd"):
+        try:
+            return _poll(args) if args.command == "poll" else _cmd(parser, args)
+        except OSError as exc:  # anything the client did not turn into a HartError
+            return _error(getattr(exc, "strerror", None) or str(exc))
     if args.command == "profiles":
         for name in bundled_profiles():
             print(name)
