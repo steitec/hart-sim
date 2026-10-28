@@ -218,8 +218,15 @@ def test_short_data_every_write_command(dev, cmd, nbytes):  # Review Focus 2
 
 
 @pytest.mark.parametrize("protected", [False, True])
-def test_garbage_never_raises(dev, protected):
+@pytest.mark.parametrize("faults", [False, True])
+def test_garbage_never_raises(dev, protected, faults):
     dev.write_protect = protected
+    if faults:
+        dev.faults.inject("sensor_failure")
+        dev.faults.inject("saturate", direction="high")
+        dev.faults.inject("more_status", bytes=[1, 2, 3, 4, 5, 6])
+        dev.faults.inject("busy", count=20)
+        dev.faults.inject("comm_error", count=20)
     rng = random.Random(1234)
     for cmd in sorted(commands.REGISTRY):
         for n in list(range(0, 40)) + [255]:

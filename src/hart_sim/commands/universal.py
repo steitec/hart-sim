@@ -8,6 +8,8 @@ from . import NoResponse, need, register
 
 
 def _variable_alert(dev) -> bool:
+    if dev.faults.active("sensor_failure") is not None:
+        return True
     return any(not math.isfinite(v.value()) for v in (dev.pv, dev.sv) if v is not None)
 
 
@@ -118,7 +120,8 @@ def cmd9(dev, data, primary):
         unit, var = slot
         value = var.value()
         out += bytes([code, _classification(unit), unit]) + pack_float(value)
-        out += bytes([0xC0 if math.isfinite(value) else 0x00])
+        bad = var is dev.pv and dev.faults.active("sensor_failure") is not None
+        out += bytes([0xC0 if math.isfinite(value) and not bad else 0x00])
     # Timestamp: 1/32 ms since "midnight" of the (monotonic) device clock.
     out += (int((dev.clock() % 86400) * 32000) & 0xFFFFFFFF).to_bytes(4, "big")
     return 0, bytes(out)
@@ -185,9 +188,9 @@ def cmd18(dev, data, primary):
 
 @register(14)
 def cmd14(dev, data, primary):
-    lo, hi = dev.profile.sensor_limits
+    lo, hi = dev.sensor_limits
     return 0, (dev.device_id.to_bytes(3, "big") + bytes([dev.pv_unit]) + pack_float(hi)
-               + pack_float(lo) + pack_float(dev.profile.min_span))
+               + pack_float(lo) + pack_float(dev.min_span))
 
 
 @register(15)
@@ -242,8 +245,13 @@ def cmd38(dev, data, primary):
 @register(48)
 def cmd48(dev, data, primary):
     state = dev.loop()
-    specific = bytes(6)
-    # TODO(Task 6): byte 0 bit 0 = sensor failure, and consume "more status available".
+    more = dev.faults.active("more_status")
+    specific = bytearray(more["bytes"] if more else bytes(6))
+    if dev.faults.active("sensor_failure") is not None:
+        specific[0] |= 0x01
+    # Reading the additional status acknowledges "more status available".
+    dev.faults.clear("more_status")
+    dev.more_status_pending = False
     ext = 0x02 if _variable_alert(dev) else 0
-    return 0, specific + bytes([ext, 0, 0, 0, 1 if state.saturated else 0, 0, 0,
+    return 0, bytes(specific) + bytes([ext, 0, 0, 0, 1 if state.saturated else 0, 0, 0,
                                 1 if state.fixed else 0])

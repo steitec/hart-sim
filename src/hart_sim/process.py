@@ -31,6 +31,8 @@ class Variable:
         self._drift_rate = 0.0
         self._drift_offset = 0.0
         self._drift_t = self._t0
+        self._scale = 1.0   # unit conversion applied to sources and drift
+        self._shift = 0.0
         self._y = self._raw_at(self._t0)
         self._y_t = self._t0
 
@@ -54,7 +56,8 @@ class Variable:
     def _raw_at(self, t: float) -> float:
         if self._override is not None:
             return self._override
-        return sum(self._source_value(s, t) for s in self.spec.sources) + self._drift_at(t)
+        total = sum(self._source_value(s, t) for s in self.spec.sources) + self._drift_at(t)
+        return self._scale * total + self._shift
 
     def _advance(self, now: float) -> None:
         """Bring the damped state up to `now` using the current inputs."""
@@ -91,7 +94,15 @@ class Variable:
         self._advance(now)
         self._drift_offset = self._drift_at(now)
         self._drift_t = now
-        self._drift_rate += per_second
+        self._drift_rate += per_second / self._scale  # per_second is in the current unit
+
+    def rescale(self, scale: float, shift: float) -> None:
+        """Convert to another engineering unit: value_new = scale * value + shift."""
+        self._advance(self._clock())
+        self._y = scale * self._y + shift
+        if self._override is not None:
+            self._override = scale * self._override + shift
+        self._scale, self._shift = scale * self._scale, scale * self._shift + shift
 
 
 @dataclass(frozen=True)
