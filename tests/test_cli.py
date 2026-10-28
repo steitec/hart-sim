@@ -154,3 +154,20 @@ def test_serve_ctrl_c():
         if proc.poll() is None:
             proc.kill()
             proc.communicate()
+
+
+def test_inject_readme_forms_work_verbatim(bench, capsys):
+    dev = bench.devices["PT-101"]
+    for kind, *params in (("comm_error", "flags=0x10", "count=2"), ("busy", "count=2"),
+                          ("no_response", "count=1"), ("delay", "seconds=0.01", "count=1"),
+                          ("saturate", "direction=high"), ("more_status", "bytes=1,2,3,4,5,6"),
+                          ("drift", "per_second=0.5"), ("sensor_failure",), ("cold_start",)):
+        code, _, err = run(capsys, "inject", "PT-101", kind, *params, *ctl(bench))
+        assert code == 0, (kind, err)
+    assert dev.faults.active("comm_error") == {"flags": 0x10, "count": 2}
+    assert dev.faults.active("more_status") == {"bytes": [1, 2, 3, 4, 5, 6]}
+    code, _, err = run(capsys, "inject", "PT-101", "write_protect", "on=on", *ctl(bench))
+    assert code == 0, err
+    assert dev.write_protect is True
+    code, _, err = run(capsys, "inject", "PT-101", "write_protect", "on=off", *ctl(bench))
+    assert code == 0 and dev.write_protect is False

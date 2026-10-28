@@ -175,18 +175,22 @@ address, or malformed gets no answer.
 Faults are injected at runtime with `hart-sim inject` or through the
 [control channel](#control-channel). Parameters are `KEY=VALUE`.
 
-| kind | parameters | effect |
-|---|---|---|
-| `no_response` | `count=1` | the next `count` requests get no answer |
-| `delay` | `seconds`, `count` (default: forever) | answers are sent `seconds` late |
-| `busy` | `count=1` | response code 32 (busy), no state change |
-| `comm_error` | `flags=0x08`, `count=1` | communication error byte instead of a response code |
-| `sensor_failure` | none | device malfunction, PV out of limits and bad, alarm current, details in command 48 |
-| `saturate` | `direction=high` or `low` | loop current pinned to 20.5 / 3.8 mA, "loop current saturated" |
-| `cold_start` | none | cold start bit set for both masters, as after a restart |
-| `more_status` | `bytes` (6 integers) | "more status available" until command 48 reads it; the bytes appear in its device specific status |
-| `drift` | `per_second` | the PV drifts away; `clear` removes it |
-| `write_protect` | `on` | write protect switched on or off |
+| kind | parameters | effect | example |
+|---|---|---|---|
+| `no_response` | `count=1` | the next `count` requests get no answer | `hart-sim inject PT-101 no_response count=3` |
+| `delay` | `seconds`, `count` (default: forever) | answers are sent `seconds` late | `hart-sim inject PT-101 delay seconds=0.5` |
+| `busy` | `count=1` | response code 32 (busy), no state change | `hart-sim inject PT-101 busy count=2` |
+| `comm_error` | `flags=0x08`, `count=1` | communication error byte instead of a response code | `hart-sim inject PT-101 comm_error flags=0x10` |
+| `sensor_failure` | none | device malfunction, PV out of limits and bad, alarm current, details in command 48 | `hart-sim inject PT-101 sensor_failure` |
+| `saturate` | `direction=high` or `low` | loop current pinned to 20.5 / 3.8 mA, "loop current saturated" | `hart-sim inject PT-101 saturate direction=high` |
+| `cold_start` | none | cold start bit set for both masters, as after a restart | `hart-sim inject PT-101 cold_start` |
+| `more_status` | `bytes` (6 integers) | "more status available" until command 48 reads it; the bytes appear in its device specific status | `hart-sim inject PT-101 more_status bytes=1,2,3,4,5,6` |
+| `drift` | `per_second` | the PV drifts away; `clear` removes it | `hart-sim inject PT-101 drift per_second=0.5` |
+| `write_protect` | `on` | write protect switched on or off | `hart-sim inject PT-101 write_protect on=on` |
+
+Integers may be written in decimal or as `0x..` hex; booleans as `true`/`false`,
+`on`/`off` or `1`/`0`; `bytes` as a comma-separated list. The same forms work in
+the JSON `params` of the control channel (lists and JSON booleans too).
 
 ## Control channel
 

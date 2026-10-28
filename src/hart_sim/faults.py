@@ -48,13 +48,28 @@ def _finite(value: Any) -> float:
     return number
 
 
+def _whole(value: Any) -> int:
+    """An integer given as int, integral float, or a string such as "16" or "0x10"."""
+    if isinstance(value, bool):
+        raise ValueError("must be a whole number")
+    if isinstance(value, str):
+        try:
+            return int(value.strip(), 0)
+        except ValueError:
+            raise ValueError("must be a whole number (decimal or 0x.. hex)") from None
+    number = _finite(value)
+    if number != int(number):
+        raise ValueError("must be a whole number")
+    return int(number)
+
+
 def _count(value: Any) -> int | None:
     if value is None:
         return None
-    number = _finite(value)
-    if number != int(number) or number < 1:
+    number = _whole(value)
+    if number < 1:
         raise ValueError("must be a whole number >= 1")
-    return int(number)
+    return number
 
 
 def _positive(value: Any) -> float:
@@ -68,10 +83,10 @@ def _number(value: Any) -> float:
 
 
 def _flags(value: Any) -> int:
-    number = _finite(value)
-    if number != int(number) or not 1 <= number <= 0x7F:
+    number = _whole(value)
+    if not 1 <= number <= 0x7F:
         raise ValueError("must be a whole number 1-127 (bit 7 is set by the device)")
-    return int(number)
+    return number
 
 
 def _direction(value: Any) -> str:
@@ -81,23 +96,39 @@ def _direction(value: Any) -> str:
 
 
 def _six_bytes(value: Any) -> list[int]:
-    if isinstance(value, (str, bytes, bytearray)) or not hasattr(value, "__iter__"):
+    """Six integers 0-255, as a list or a comma-separated string such as "1,2,3,4,5,6"."""
+    if isinstance(value, str):
+        items: list = value.split(",")
+    elif isinstance(value, (bytes, bytearray)) or not hasattr(value, "__iter__"):
         raise ValueError("must be a list of 6 integers (0-255)")
-    items = list(value)
+    else:
+        items = list(value)
     if len(items) != 6:
         raise ValueError("must be a list of exactly 6 integers (0-255)")
     out = []
     for item in items:
-        if isinstance(item, bool) or not isinstance(item, int) or not 0 <= item <= 255:
+        try:
+            number = _whole(item)
+        except ValueError:
+            raise ValueError("must be a list of 6 integers (0-255)") from None
+        if not 0 <= number <= 255:
             raise ValueError("must be a list of 6 integers (0-255)")
-        out.append(item)
+        out.append(number)
     return out
 
 
 def _bool(value: Any) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError("must be true or false")
-    return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "on", "1"):
+            return True
+        if text in ("false", "off", "0"):
+            return False
+    raise ValueError("must be true/false, on/off or 1/0")
 
 
 FAULTS: dict[str, dict[str, tuple[Any, Callable[[Any], Any]]]] = {

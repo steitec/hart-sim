@@ -151,3 +151,33 @@ def test_threaded_inject_and_handle_do_not_deadlock(dev):
     for t in threads:
         t.join(5)
     assert not any(t.is_alive() for t in threads) and not errors
+
+
+def test_lenient_parameter_forms():
+    fs = FaultSet()
+    fs.inject("comm_error", flags="0x10", count="2")
+    assert fs.active("comm_error") == {"flags": 0x10, "count": 2}
+    fs.inject("comm_error", flags=" 8 ")
+    assert fs.active("comm_error")["flags"] == 8
+    fs.inject("more_status", bytes="1,2,3,4,5,0xff")
+    assert fs.active("more_status") == {"bytes": [1, 2, 3, 4, 5, 255]}
+    fs.inject("more_status", bytes=[1, 2, 3, 4, 5, 6])
+    for text, expected in (("on", True), ("TRUE", True), ("1", True), ("off", False),
+                           ("False", False), ("0", False), (True, True), (False, False)):
+        fs.inject("write_protect", on=text)  # one-shot: only the conversion is checked
+    for bad in ("maybe", "", 2, None):
+        with pytest.raises(FaultError, match="on"):
+            fs.inject("write_protect", on=bad)
+    for kind, params in (("comm_error", {"flags": "0x80"}), ("busy", {"count": "x"}),
+                         ("busy", {"count": "1.5"}), ("busy", {"count": True}),
+                         ("more_status", {"bytes": "1,2,3"}), ("more_status", {"bytes": "1,2,3,4,5,x"}),
+                         ("more_status", {"bytes": ""})):
+        with pytest.raises(FaultError):
+            fs.inject(kind, **params)
+
+
+def test_write_protect_string_reaches_device(dev):
+    dev.faults.inject("write_protect", on="on")
+    assert dev.write_protect is True
+    dev.faults.inject("write_protect", on="off")
+    assert dev.write_protect is False
