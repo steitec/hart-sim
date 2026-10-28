@@ -104,6 +104,15 @@ sv: {name: sensor temperature, unit: degC, source: {type: constant, value: 23.5}
 
 Process value sources: `constant` (`value`), `ramp` (`start`, `stop`,
 `period`), `sine` (`offset`, `amplitude`, `period`) and `noise` (`sigma`).
+`source` may also be a list; the values of all its entries are summed:
+
+```yaml
+  source:
+    - {type: constant, value: 400}
+    - {type: sine, offset: 0, amplitude: 20, period: 30}
+    - {type: noise, sigma: 0.5}
+```
+
 Units: `inH2O psi bar mbar kPa degC degF K mA %`. The generic profiles use
 manufacturer ID `0x00FA` and expanded device types `0xFA01` / `0xFA02`, which
 deliberately belong to no real manufacturer.
@@ -206,7 +215,17 @@ line and answers each with one line, `{"ok": true}` or `{"ok": false, "error": .
 ```
 
 `set` with `null` returns the PV (or `sv`) to the simulated process; `list`
-returns faults, PV, loop current and polling address per device.
+returns faults, PV, loop current and polling address per device. `pv` and
+`sv` values must satisfy |value| <= 3.4e38 (what a HART float can carry).
+
+The control channel binds `127.0.0.1` whatever `--host` is; use
+`hart-sim serve --control-host ADDRESS` to listen elsewhere. A request line is
+limited to 64 KiB (`{"ok": false, "error": "line too long"}`, then the
+connection is closed).
+
+**No authentication:** neither HART-IP nor the control port checks who
+connects. Binding either to `0.0.0.0` (or any non-loopback address) exposes the
+simulated devices to everyone who can reach the machine.
 
 ## Python client
 
@@ -265,6 +284,15 @@ See [`examples/test_example.py`](examples/test_example.py).
 - Unit code 1 is inH2O at 68 degF.
 - Commands 36 and 37 apply the same limit checks as 35. A real device's
   command 37 keeps the span.
+- Fixed 4 mA ("multidrop") is only set by command 6 (loop current mode). A
+  polling address other than 0 in a bench file or profile does not fix the
+  current; this deviates from the wording of the HART specification, which
+  ties multidrop to the polling address.
+- Clearing a `drift` fault stops the drift but keeps the offset that has
+  already accumulated; it does not return the PV to where it started.
+- The control channel and the bench (`inject`, `clear`, `set`, `list`) address
+  a device by its original tag, also after command 18 or 22 has renamed it.
+- HART-IP is IPv4 only.
 - A `delay` fault on UDP delays all UDP clients (single UDP thread).
 - `no_response` is consumed even by requests the device would ignore anyway.
 
