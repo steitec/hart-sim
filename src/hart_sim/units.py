@@ -34,8 +34,8 @@ def name(code: int) -> str:
 
 
 # Conversion to a base unit per family: base = a * value + b.
-# Pressure base is kPa (inH2O at 4 degC); temperature base is degC.
-_PRESSURE = {1: (0.24908891, 0.0), 6: (6.894757293, 0.0), 7: (100.0, 0.0),
+# Pressure base is kPa (HART code 1 inH2O is referenced to 68 degF); temperature base is degC.
+_PRESSURE = {1: (0.2486391, 0.0), 6: (6.894757293, 0.0), 7: (100.0, 0.0),
              8: (0.1, 0.0), 12: (1.0, 0.0)}
 _TEMPERATURE = {32: (1.0, 0.0), 33: (5.0 / 9.0, -160.0 / 9.0), 35: (1.0, -273.15)}
 

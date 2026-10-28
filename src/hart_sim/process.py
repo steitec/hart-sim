@@ -88,13 +88,21 @@ class Variable:
         self._advance(self._clock())
         self._override = value
 
-    def add_drift(self, per_second: float) -> None:
-        """Add a drift of `per_second` units/s, starting now."""
+    def add_drift(self, per_second: float) -> float:
+        """Add a drift of `per_second` units/s (current unit), starting now.
+
+        Returns the rate in raw (pre-conversion) units, for `add_raw_drift` to undo it.
+        """
+        raw = per_second / self._scale
+        self.add_raw_drift(raw)
+        return raw
+
+    def add_raw_drift(self, raw_per_second: float) -> None:
         now = self._clock()
         self._advance(now)
         self._drift_offset = self._drift_at(now)
         self._drift_t = now
-        self._drift_rate += per_second / self._scale  # per_second is in the current unit
+        self._drift_rate += raw_per_second
 
     def rescale(self, scale: float, shift: float) -> None:
         """Convert to another engineering unit: value_new = scale * value + shift."""

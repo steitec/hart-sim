@@ -122,8 +122,11 @@ def test_self_test_and_reset(dev):
     assert dev.status_byte(True) & 0x20 == 0
     r = send(dev, 42)
     assert r.response_code == 0 and dev.fixed_ma is None and dev.damping == 3.0
-    assert r.device_status & 0x20  # cold start re-armed, visible to the requester
-    assert dev.status_byte(False) & 0x20
+    assert r.device_status & 0x20 == 0  # R7: re-armed after the reply
+    assert send(dev, 1, primary=True).device_status & 0x20
+    assert send(dev, 1, primary=True).device_status & 0x20 == 0
+    assert send(dev, 1, primary=False).device_status & 0x20
+    assert send(dev, 1, primary=False).device_status & 0x20 == 0
 
 
 def test_unit_change_converts_range(dev):
@@ -192,6 +195,22 @@ def test_trim_zero_output_equals_measurement(dev):
     assert current(dev) == pytest.approx(10.4 * dev.trim_gain + dev.trim_zero, abs=1e-4)
 
 
+def test_trim_bounds(dev):  # R8
+    send(dev, 40, f(4.0))
+    assert send(dev, 45, f(5.5)).response_code == 3
+    assert send(dev, 45, f(2.5)).response_code == 4
+    assert send(dev, 45, f(4.9)).response_code == 0
+    send(dev, 40, f(20.0))
+    assert send(dev, 46, f(22.0)).response_code == 3   # gain 1.1
+    assert send(dev, 46, f(18.0)).response_code == 4   # gain 0.9
+    assert (dev.trim_zero, dev.trim_gain) == pytest.approx((0.9, 1.0), abs=1e-5)
+    assert send(dev, 46, f(20.5)).response_code == 0
+
+
+def test_unit_conversion_inh2o():
+    assert units.convert(1.0, 1, 12) == pytest.approx(0.2486391)  # 68 degF reference
+
+
 def test_trim_needs_fixed_mode(dev):
     assert send(dev, 45, f(4.0)).response_code == 9
     assert send(dev, 46, f(20.0)).response_code == 9
@@ -216,7 +235,7 @@ def test_write_protect_blocks_common_writes(dev):
     for cmd, data in [(34, f(1)), (35, bytes([12]) + f(600, 0)), (36, b""), (37, b""),
                       (40, f(12)), (42, b""), (44, bytes([7])), (45, f(4)), (46, f(20)),
                       (59, bytes([6]))]:
-        assert send(dev, cmd).response_code == 7, cmd
+        assert send(dev, cmd, data).response_code == 7, cmd
     assert send(dev, 33, bytes([0])).response_code == 0
     assert send(dev, 41).response_code == 0
 

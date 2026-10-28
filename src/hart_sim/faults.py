@@ -28,6 +28,7 @@ write_protect   on (bool)                                    sets ``Device.write
 from __future__ import annotations
 
 import math
+import contextlib
 import threading
 from typing import Any, Callable
 
@@ -68,8 +69,8 @@ def _number(value: Any) -> float:
 
 def _flags(value: Any) -> int:
     number = _finite(value)
-    if number != int(number) or not 0 <= number <= 0x7F:
-        raise ValueError("must be a whole number 0-127 (bit 7 is set by the device)")
+    if number != int(number) or not 1 <= number <= 0x7F:
+        raise ValueError("must be a whole number 1-127 (bit 7 is set by the device)")
     return int(number)
 
 
@@ -142,16 +143,22 @@ def validate(kind: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 class FaultSet:
-    """Active faults. Thread-safe; `device` receives the one-shot and drift effects."""
+    """Active faults. Thread-safe; `device` receives the one-shot and drift effects.
+
+    Lock order everywhere: Device.lock first, then FaultSet._lock. take/active/snapshot
+    only need the fault lock (Device.handle calls them while holding its own lock);
+    inject/clear take the device lock first because they change device state.
+    """
 
     def __init__(self, device=None):
         self._device = device
         self._lock = threading.Lock()
+        self._drift_raw = 0.0  # raw-unit drift rate actually added to the PV
         self._active: dict[str, dict[str, Any]] = {}
 
     def inject(self, kind: str, **params: Any) -> None:
         values = validate(kind, params)
-        with self._lock:
+        with self._device_lock(), self._lock:
             if kind == "drift":
                 self._remove_drift()
             if kind not in _ONE_SHOT:
@@ -159,8 +166,11 @@ class FaultSet:
             if self._device is not None:
                 self._apply(kind, values)
 
+    def _device_lock(self):
+        return self._device.lock if self._device is not None else contextlib.nullcontext()
+
     def clear(self, kind: str | None = None) -> None:
-        with self._lock:
+        with self._device_lock(), self._lock:
             if kind is None:
                 kinds = list(self._active)
             elif kind in FAULTS:
@@ -205,14 +215,15 @@ class FaultSet:
     # --- device effects (lock held) ---
 
     def _remove_drift(self) -> None:
-        old = self._active.get("drift")
-        if old is not None and self._device is not None:
-            self._device.pv.add_drift(-old["per_second"])
+        # Subtract exactly what was added, whatever unit the PV is in now.
+        if self._drift_raw and self._device is not None:
+            self._device.pv.add_raw_drift(-self._drift_raw)
+        self._drift_raw = 0.0
 
     def _apply(self, kind: str, values: dict[str, Any]) -> None:
         dev = self._device
         if kind == "drift":
-            dev.pv.add_drift(values["per_second"])
+            self._drift_raw = dev.pv.add_drift(values["per_second"])
         elif kind == "cold_start":
             dev.rearm_cold_start()
         elif kind == "write_protect":

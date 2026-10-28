@@ -20,6 +20,7 @@ def test_fault_validation_messages():
             ("delay", {"seconds": 0}, "seconds"),
             ("delay", {}, "missing parameter 'seconds'"),
             ("comm_error", {"flags": 0x80}, "flags"),
+            ("comm_error", {"flags": 0}, "flags"),
             ("busy", {"count": 0}, "count"),
             ("busy", {"count": float("nan")}, "count"),
             ("busy", {"x": 1}, "unknown parameter 'x'"),
@@ -95,3 +96,58 @@ def test_inject_replaces_params():
     fs.inject("busy", count=5)
     fs.inject("busy", count=1)
     assert fs.active("busy") == {"count": 1}
+
+
+def test_drift_clear_after_unit_change(dev):
+    from hart_sim.frame import Address, Frame
+    dev.damping = 0.0
+    dev.pv.spec = dev.pv.spec.__class__(dev.pv.spec.name, dev.pv.spec.unit, ())
+    dev.faults.inject("drift", per_second=2.0)
+    dev.clock_t[0] = 10.0
+    assert dev.handle(Frame(Address.long(0xFA01, 1), 44, bytes([7]))).response_code == 0
+    assert dev.pv.value() == pytest.approx(0.2)  # 20 kPa in bar
+    dev.faults.clear("drift")
+    dev.clock_t[0] = 20.0
+    assert dev.pv.value() == pytest.approx(0.2)
+    dev.faults.inject("drift", per_second=0.01)  # bar/s
+    dev.faults.inject("drift", per_second=0.02)  # replaces
+    dev.clock_t[0] = 30.0
+    assert dev.pv.value() == pytest.approx(0.4)
+    dev.faults.clear()
+    dev.clock_t[0] = 40.0
+    assert dev.pv.value() == pytest.approx(0.4)
+
+
+def test_threaded_inject_and_handle_do_not_deadlock(dev):
+    import threading
+    import time
+    from hart_sim.frame import Address, Frame
+    stop = time.monotonic() + 1.0
+    errors = []
+
+    def handler():
+        try:
+            while time.monotonic() < stop:
+                dev.handle(Frame(Address.long(0xFA01, 1), 48))
+                dev.handle(Frame(Address.long(0xFA01, 1), 2))
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    def injector():
+        try:
+            while time.monotonic() < stop:
+                dev.faults.inject("cold_start")
+                dev.faults.inject("drift", per_second=0.1)
+                dev.faults.inject("more_status", bytes=[1, 2, 3, 4, 5, 6])
+                dev.faults.clear("drift")
+                dev.faults.clear()
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    threads = [threading.Thread(target=handler, daemon=True),
+               threading.Thread(target=injector, daemon=True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert not any(t.is_alive() for t in threads) and not errors

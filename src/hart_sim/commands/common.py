@@ -9,6 +9,8 @@ from ..process import I_ALARM_HIGH, I_ALARM_LOW
 from . import need, register
 
 _EPS = 1e-5  # 3.6 and 21.0 are not exact in single precision
+_TRIM_ZERO_MAX = 1.0  # mA
+_TRIM_GAIN = (0.95, 1.05)
 _SLOT_OF_CODE = {0: 0, 246: 0, 1: 1, 247: 1}
 
 
@@ -129,7 +131,7 @@ def cmd41(dev, data, primary):
 @register(42, write=True)
 def cmd42(dev, data, primary):
     dev.fixed_ma = None
-    dev.rearm_cold_start()  # configuration is kept
+    dev.reset_pending = True  # cold start is re-armed after this reply; configuration is kept
     return 0, b""
 
 
@@ -164,7 +166,7 @@ def _trim(dev, data, zero: bool):
     I_meas it measured. The simulator maps the commanded current to the reported one:
     zero trim (45, normally at 4 mA) changes only trim_zero, gain trim (46, normally
     at 20 mA) only trim_gain, so that output(I_cmd) == I_meas afterwards. Trim applies
-    in every mode.
+    in every mode. Trim is limited to +-1.0 mA zero and 0.95-1.05 gain (codes 3/4).
     """
     need(data, 4)
     if dev.fixed_ma is None:
@@ -174,9 +176,15 @@ def _trim(dev, data, zero: bool):
         return 2, b""
     cmd = dev.fixed_ma  # >= 3.6, so the division is safe
     if zero:
-        dev.trim_zero = measured - dev.trim_gain * cmd
+        new = measured - dev.trim_gain * cmd
+        if abs(new) > _TRIM_ZERO_MAX + _EPS:
+            return (3 if new > 0 else 4), b""
+        dev.trim_zero = new
     else:
-        dev.trim_gain = (measured - dev.trim_zero) / cmd
+        new = (measured - dev.trim_zero) / cmd
+        if not _TRIM_GAIN[0] - _EPS <= new <= _TRIM_GAIN[1] + _EPS:
+            return (3 if new > 1 else 4), b""
+        dev.trim_gain = new
     dev.mark_config_changed()
     return 0, pack_float(measured)
 

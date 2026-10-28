@@ -42,6 +42,7 @@ class Device:
         self.response_preambles = 5
         self.pv = Variable(profile.pv, profile.damping, clock)
         self.sv = Variable(profile.sv, profile.damping, clock) if profile.sv else None
+        self.reset_pending = False  # command 42: re-arm cold start after the reply
         self.more_status_pending = False  # "more status available" until command 48
         self.faults = FaultSet(self)
         self._cold_start = {_PRIMARY: True, _SECONDARY: True}
@@ -168,4 +169,7 @@ class Device:
             status = self.status_byte(primary)
             if was_cold:
                 status |= 0x20
+            if self.reset_pending:
+                self.reset_pending = False
+                self.rearm_cold_start()
             return Frame(addr, request.command, data, True, code, status)
