@@ -106,6 +106,7 @@ def test_dissector_finds_every_message_without_malformed(pcap):
     path, count = pcap
     verbose = tshark("-r", str(path), "-V")
     assert "Malformed" not in verbose
+    assert tshark("-r", str(path), "-Y", "_ws.malformed").strip() == ""
     rows = tshark("-r", str(path), "-Y", "hart_ip", "-T", "fields", "-e", "hart_ip.message_type",
                   "-e", "hart_ip.message_id").splitlines()
     assert len(rows) == count == 12  # initiate, 4 commands, close: request + response each
