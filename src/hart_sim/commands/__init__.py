@@ -10,6 +10,10 @@ class ShortData(Exception):
     """Request data shorter than the command needs (response code 5)."""
 
 
+class NoResponse(Exception):
+    """Handler outcome: the device stays silent (e.g. command 11/21 with a foreign tag)."""
+
+
 def need(data: bytes, n: int) -> None:
     if len(data) < n:
         raise ShortData(f"need {n} data bytes, got {len(data)}")

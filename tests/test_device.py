@@ -135,7 +135,6 @@ def test_ignores_response_frames(dev):
     assert dev.handle(Frame(Address.long(0xFA01, 1), 3, is_response=True)) is None
 
 
-@pytest.mark.xfail(strict=True, reason="command 38 arrives in Task 5")
 def test_config_changed_per_master(dev):
     dev.mark_config_changed()
     L = lambda p, c: Frame(Address.long(0xFA01, 1, p), c)

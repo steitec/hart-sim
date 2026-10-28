@@ -6,7 +6,7 @@ import threading
 import time
 
 from . import commands
-from .commands import ShortData
+from .commands import NoResponse, ShortData
 from .frame import Address, Frame, pack_ascii
 from .process import LoopState, Variable, loop_current
 from .profile import Profile
@@ -25,6 +25,7 @@ class Device:
     def __init__(self, profile: Profile, polling_address: int = 0, device_id: int = 1,
                  clock=time.monotonic):
         self.profile = profile
+        self.clock = clock
         self.device_id = device_id
         self.polling_address = polling_address
         self.tag = profile.tag
@@ -132,6 +133,8 @@ class Device:
                         code, data = fn(self, request.data, primary)
                     except ShortData:
                         code, data = 5, b""
+                    except NoResponse:
+                        return None
             status = self.status_byte(primary)
             self._cold_start[primary] = False
             if request.address.is_broadcast:
