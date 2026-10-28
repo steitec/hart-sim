@@ -107,13 +107,17 @@ class Bench:
     # --- lifecycle ---
 
     def start(self, host: str = "127.0.0.1", port: int = hartip.PORT,
-              control_port: int = CONTROL_PORT) -> None:
-        """Start the HART-IP server and the control channel; port 0 picks a free port."""
+              control_port: int = CONTROL_PORT, control_host: str = "127.0.0.1") -> None:
+        """Start the HART-IP server and the control channel; port 0 picks a free port.
+
+        The control channel has no authentication, so it stays on loopback whatever
+        `host` is; pass `control_host` to expose it deliberately.
+        """
         if self.server is not None:
             raise BenchError("bench is already running")
         server = Server(list(self.devices.values()), host=host, port=port)
         server.start()
-        control = ControlServer(self, host, control_port)
+        control = ControlServer(self, control_host, control_port)
         try:
             control.start()
         except BaseException:

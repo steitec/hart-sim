@@ -226,3 +226,17 @@ def test_cmd_warning_code_14_is_not_an_error(bench, capsys):
     assert err.strip() == "warning: code 14"
     code, out, err = run(capsys, "cmd", "--tag", "PT-101", "99", *conn(bench))
     assert code == 1 and "response code 64" in err  # real errors stay errors
+
+
+def test_serve_control_host_option(monkeypatch, capsys):
+    seen = {}
+
+    def fake_start(self, **kwargs):
+        seen.update(kwargs)
+        raise OSError(98, "stop here")
+
+    monkeypatch.setattr(Bench, "start", fake_start)
+    assert main(["serve", "pressure", "--host", "0.0.0.0"]) == 2
+    assert seen["host"] == "0.0.0.0" and seen["control_host"] == "127.0.0.1"
+    assert main(["serve", "pressure", "--control-host", "10.1.2.3"]) == 2
+    assert seen["control_host"] == "10.1.2.3"

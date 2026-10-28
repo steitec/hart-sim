@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import socket
 import socketserver
 import threading
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from .bench import Bench
 
 _SETTABLE = ("pv", "sv")
+_MAX_LINE = 65536  # bytes per request line, including the newline
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -37,7 +39,14 @@ class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self) -> None:
         try:
-            for raw in self.rfile:
+            while True:
+                raw = self.rfile.readline(_MAX_LINE)
+                if not raw:
+                    return
+                if len(raw) >= _MAX_LINE and not raw.endswith(b"\n"):
+                    self.wfile.write(json.dumps({"ok": False, "error": "line too long"}).encode()
+                                     + b"\n")
+                    return
                 if not raw.strip():
                     continue
                 answer = self.server.control.handle(raw)
@@ -48,7 +57,7 @@ class _Handler(socketserver.StreamRequestHandler):
 
 class _Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = os.name != "nt"  # on Windows it would allow port hijacking
 
     def __init__(self, address: tuple[str, int], handler):
         self.address_family = socket.getaddrinfo(

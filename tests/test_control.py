@@ -92,3 +92,45 @@ def test_control_set_sv_without_sv(tmp_path):
         tag = next(iter(b.devices))
         r = send_control({"device": tag, "set": {"sv": 1}}, port=b.control_port)
         assert r["ok"] is False and "sv" in r["error"]
+
+
+def test_control_binds_loopback_regardless_of_host():
+    bench = Bench.from_dict(PLANT)
+    bench.start(host="127.0.0.2", port=0, control_port=0)
+    try:
+        assert bench.control.host == "127.0.0.1"
+        assert bench.control._server.server_address[0] == "127.0.0.1"
+        assert send_control({"list": True}, port=bench.control_port)["ok"]
+        with pytest.raises(OSError):
+            send_control({"list": True}, host="127.0.0.2", port=bench.control_port, timeout=1)
+    finally:
+        bench.stop()
+
+
+def test_control_host_option():
+    bench = Bench.from_dict(PLANT)
+    bench.start(host="127.0.0.1", port=0, control_port=0, control_host="127.0.0.2")
+    try:
+        assert send_control({"list": True}, host="127.0.0.2", port=bench.control_port)["ok"]
+        with pytest.raises(OSError):
+            send_control({"list": True}, host="127.0.0.1", port=bench.control_port, timeout=1)
+    finally:
+        bench.stop()
+
+
+def test_control_line_too_long_closes_connection(bench):
+    with socket.create_connection(("127.0.0.1", bench.control_port), timeout=5) as sock:
+        sock.sendall(b'{"list": true, "pad": "' + b"x" * 70000)
+        stream = sock.makefile("rb")
+        assert json.loads(stream.readline()) == {"ok": False, "error": "line too long"}
+        assert stream.readline() == b""  # connection closed
+    # a long but legal line still works, and the server keeps serving
+    assert ctl(bench, list=True, pad="y" * 60000)["ok"]
+
+
+
+def test_control_server_reuse_address_matches_platform():
+    import os
+    from hart_sim import control, server
+    assert control._Server.allow_reuse_address == (os.name != "nt")
+    assert server._TcpServer.allow_reuse_address == (os.name != "nt")

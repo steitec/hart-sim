@@ -63,6 +63,9 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     serve.add_argument("--port", type=_port, default=hartip.PORT,
                        help=f"HART-IP port, TCP and UDP (default: {hartip.PORT}, 0 = any free port)")
+    serve.add_argument("--control-host", default="127.0.0.1",
+                       help="address of the control port (default: 127.0.0.1, whatever --host is; "
+                            "the control port has no authentication)")
     serve.add_argument("--control-port", type=_port, default=CONTROL_PORT,
                        help=f"control port (default: {CONTROL_PORT}, 0 = any free port)")
 
@@ -124,13 +127,15 @@ def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     except (BenchError, ProfileError) as exc:
         return _error(str(exc))
     try:
-        bench.start(host=args.host, port=args.port, control_port=args.control_port)
+        bench.start(host=args.host, port=args.port, control_port=args.control_port,
+                    control_host=args.control_host)
     except OSError as exc:
         return _error(f"cannot listen on {args.host}: {exc.strerror or exc}")
     stop = _stop_event()
     count = len(bench.devices)
     print(f"hart-sim: {count} device{'' if count == 1 else 's'} on HART-IP "
-          f"{args.host}:{bench.server.port} (tcp+udp), control on :{bench.control_port}", flush=True)
+          f"{args.host}:{bench.server.port} (tcp+udp), control on "
+          f"{args.control_host}:{bench.control_port}", flush=True)
     while not stop.wait(0.5):
         pass
     bench.stop()
