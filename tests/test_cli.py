@@ -215,3 +215,14 @@ def test_connection_reset_mid_command_no_traceback(capsys):
     assert err.startswith("hart-sim: error:") and len(err.splitlines()) == 1
     thread.join(5)
     listener.close()
+
+
+def test_cmd_warning_code_14_is_not_an_error(bench, capsys):
+    import struct
+    data = bytes([12]) + struct.pack(">ff", 505.0, 500.0)  # span 5 < min span 10: applied
+    code, out, err = run(capsys, "cmd", "--tag", "PT-101", "35", data.hex(), *conn(bench))
+    assert code == 0
+    assert out.startswith("code 14 status 0x")
+    assert err.strip() == "warning: code 14"
+    code, out, err = run(capsys, "cmd", "--tag", "PT-101", "99", *conn(bench))
+    assert code == 1 and "response code 64" in err  # real errors stay errors

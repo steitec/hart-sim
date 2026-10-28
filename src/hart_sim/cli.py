@@ -15,6 +15,8 @@ from .control import send_control
 from .frame import unpack_ascii, unpack_float
 from .profile import ProfileError, bundled_profiles
 
+# Response codes 8 and 14 (span too small) are warnings: the command was carried out.
+_WARNING_CODES = (8, 14)
 _KINDS = {0xFA01 & 0x3FFF: "pressure-transmitter", 0xFA02 & 0x3FFF: "temperature-transmitter"}
 
 
@@ -211,6 +213,9 @@ def _cmd(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if frame.response_code != 0:
             print(f"code {frame.response_code} status 0x{frame.device_status:02x} "
                   f"data {frame.data.hex()}")
+            if frame.response_code in _WARNING_CODES:  # applied, but with a remark
+                print(f"warning: code {frame.response_code}", file=sys.stderr)
+                return 0
             print(f"hart-sim: error: command {args.number}: response code {frame.response_code}",
                   file=sys.stderr)
             return 1
