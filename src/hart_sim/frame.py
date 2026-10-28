@@ -68,6 +68,8 @@ def pack_float(x: float) -> bytes:
 
 
 def unpack_float(b: bytes) -> float:
+    if len(b) != 4:
+        raise ValueError("float must be exactly 4 bytes")
     return struct.unpack(">f", b)[0]
 
 
@@ -90,10 +92,8 @@ class Address:
             raise ValueError("expanded device type must fit in 16 bits")
         if not 0 <= device_id <= 0xFFFFFF:
             raise ValueError("device ID must fit in 24 bits")
-        # The address carries only the low 14 bits of the expanded type; decode()
-        # restores the top two bits as 11 for non-zero values (0xC000-0xFFFF range,
-        # which covers the generic 0xFA01/0xFA02 profiles). Other types do not
-        # round-trip.
+        # The address carries only the low 14 bits of the expanded device type;
+        # decode() returns the type masked to 14 bits (e.g. 0xFA01 -> 0x3A01).
         return cls(None, (device_type, device_id), primary)
 
     @classmethod
@@ -162,8 +162,6 @@ class Frame:
         burst = bool(a[0] & 0x40)
         if long:
             dev_type = ((a[0] & 0x3F) << 8) | a[1]
-            if dev_type:
-                dev_type |= 0xC000
             address = Address(None, (dev_type, int.from_bytes(a[2:5], "big")), primary, burst)
         else:
             address = Address(a[0] & 0x3F, None, primary, burst)

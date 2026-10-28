@@ -33,7 +33,20 @@ def test_response_roundtrip_with_status():
     f = Frame(Address.long(0xFA01, 1), 1, b"\x0c" + pack_float(1.5), True, 0, 0x40)
     raw = f.encode()
     assert raw[0] == 0x86 and raw[7] == 2 + 5 and raw[8:10] == b"\x00\x40"
-    assert Frame.decode(raw) == f
+    decoded = Frame.decode(raw)
+    assert decoded.address.unique_id == (0xFA01 & 0x3FFF, 1)
+    assert decoded == Frame(Address.long(0xFA01 & 0x3FFF, 1), 1, f.data, True, 0, 0x40)
+
+
+def test_decode_masks_device_type_to_14_bits():
+    raw = Frame(Address.long(0xFA02, 7), 3).encode()
+    assert Frame.decode(raw).address.unique_id == (0x3A02, 7)
+
+
+def test_unpack_float_wrong_length():
+    for bad in (b"", b"\x00" * 3, b"\x00" * 5):
+        with pytest.raises(ValueError):
+            unpack_float(bad)
 
 
 def test_request_roundtrip_secondary_burst():
