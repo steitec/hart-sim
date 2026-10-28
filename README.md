@@ -8,7 +8,7 @@ devices keep state like real ones, turn a process value into a 4-20 mA loop
 current, and can be made to fail on purpose while they run.
 
 ```console
-$ hart-sim serve --bench examples/plant.yaml &
+$ hart-sim serve --bench plant.yaml &
 hart-sim: 2 devices on HART-IP 127.0.0.1:5094 (tcp+udp), control on :5095
 $ hart-sim poll
 addr 1  PT-101  pressure-transmitter  id 0x000001
@@ -43,16 +43,27 @@ gives you devices that:
 Requires Python 3.10 or newer; the only dependency is PyYAML.
 
 ```bash
+pip install hart-sim
+```
+
+From source, with the test dependencies:
+
+```bash
 git clone https://github.com/steitec/hart-sim.git && cd hart-sim
-pip install -e .
+pip install -e ".[dev]"
+pytest
 ```
 
 ## Quick start
 
 ```bash
 hart-sim serve pressure                  # one device, polling address 0
-hart-sim serve --bench examples/plant.yaml
+hart-sim serve --bench plant.yaml        # several devices, see Bench files
 ```
+
+`plant.yaml` is the two-device bench shown under [Bench files](#bench-files);
+the repository has it as
+[`examples/plant.yaml`](https://github.com/steitec/hart-sim/blob/main/examples/plant.yaml).
 
 The server listens on `127.0.0.1`; HART-IP uses port 5094 (TCP and UDP) and
 the control channel port 5095. Change them with `--host`, `--port` and
@@ -269,7 +280,7 @@ def test_sensor_failure(hart_bench):
 - `hart_bench.client(**kwargs)` returns a connected `HartIPClient`
   (`transport`, `timeout`, `primary`); it is closed when the bench stops.
 
-See [`examples/test_example.py`](examples/test_example.py).
+See [`examples/test_example.py`](https://github.com/steitec/hart-sim/blob/main/examples/test_example.py).
 
 ## Limitations
 
@@ -298,4 +309,4 @@ See [`examples/test_example.py`](examples/test_example.py).
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/steitec/hart-sim/blob/main/LICENSE).

@@ -6,8 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## 0.1.0 - 2026-10-28
 
-Not yet released.
-
 - HART-IP version 1 server (TCP and UDP, port 5094) with simulated pressure and
   temperature transmitters (HART revision 7), universal and common practice
   commands, per-master configuration-changed and cold-start bits
