@@ -108,14 +108,19 @@ def loop_current(pv: float, lrv: float, urv: float, *, alarm: str, in_alarm: boo
                  trim_zero: float = 0.0, trim_gain: float = 1.0) -> LoopState:
     span = urv - lrv
     percent = (pv - lrv) / span * 100.0 if span != 0 else 0.0
+    # Trim models the DAC, so it applies in every mode; flags are decided before trim
+    # and the trimmed value is not re-clamped.
+    def trimmed(ma: float) -> float:
+        return ma * trim_gain + trim_zero
+
     if multidrop:
-        return LoopState(I_MULTIDROP, percent, False, True, False)
+        return LoopState(trimmed(I_MULTIDROP), percent, False, True, False)
     if fixed_ma is not None:
-        return LoopState(fixed_ma, percent, False, True, False)
+        return LoopState(trimmed(fixed_ma), percent, False, True, False)
     if in_alarm:
-        return LoopState(I_ALARM_LOW if alarm == "low" else I_ALARM_HIGH,
-                         percent, False, False, True)
+        ma = I_ALARM_LOW if alarm == "low" else I_ALARM_HIGH
+        return LoopState(trimmed(ma), percent, False, False, True)
     current = 4.0 + 16.0 * percent / 100.0
     saturated = not I_MIN <= current <= I_MAX
     current = min(max(current, I_MIN), I_MAX)
-    return LoopState(current * trim_gain + trim_zero, percent, saturated, False, False)
+    return LoopState(trimmed(current), percent, saturated, False, False)

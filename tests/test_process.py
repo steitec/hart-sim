@@ -131,3 +131,20 @@ def test_override_and_drift():
     v.add_drift(2.0)
     clk.t = 5.0
     assert v.value() == pytest.approx(11.0)
+
+
+def test_trim_applies_in_fixed_mode():
+    s = lc(500, fixed_ma=7.0, trim_zero=0.1, trim_gain=1.01)
+    assert s.current_ma == pytest.approx(7.0 * 1.01 + 0.1) and s.fixed
+
+
+def test_trim_applies_in_alarm_mode():
+    s = lc(500, in_alarm=True, trim_zero=0.1, trim_gain=1.01)
+    assert s.current_ma == pytest.approx(21.0 * 1.01 + 0.1) and s.alarm
+
+
+def test_trim_applies_in_multidrop_and_saturated():
+    m = lc(500, multidrop=True, trim_zero=0.1)
+    assert m.current_ma == pytest.approx(4.1) and m.fixed
+    s = lc(1100, trim_zero=0.1)
+    assert s.current_ma == pytest.approx(20.6) and s.saturated
