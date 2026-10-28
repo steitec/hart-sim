@@ -211,7 +211,7 @@ def test_connection_reset_mid_command_no_traceback(capsys):
     thread.start()
     code, _, err = run(capsys, "cmd", "--address", "1", "1",
                        "--port", str(listener.getsockname()[1]))
-    assert code in (1, 2)
+    assert code == 2
     assert err.startswith("hart-sim: error:") and len(err.splitlines()) == 1
     thread.join(5)
     listener.close()

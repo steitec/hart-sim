@@ -10,7 +10,7 @@ from typing import Any
 
 from . import __version__, hartip, units
 from .bench import CONTROL_PORT, Bench, BenchError
-from .client import DeviceHandle, HartError, HartIPClient, HartTimeout
+from .client import DeviceHandle, HartConnectionError, HartError, HartIPClient, HartTimeout
 from .control import send_control
 from .frame import unpack_ascii, unpack_float
 from .profile import ProfileError, bundled_profiles
@@ -212,6 +212,8 @@ def _cmd(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         except HartTimeout:
             print("hart-sim: error: device did not answer", file=sys.stderr)
             return 1
+        except HartConnectionError as exc:
+            return _error(str(exc))  # transport failure, like connection refused
         except HartError as exc:
             print(f"hart-sim: error: {exc}", file=sys.stderr)
             return 1

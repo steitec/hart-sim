@@ -34,6 +34,10 @@ class HartTimeout(HartError, TimeoutError):
     """No answer within the timeout."""
 
 
+class HartConnectionError(HartError):
+    """The connection could not be opened or was lost."""
+
+
 @dataclass(frozen=True)
 class DeviceInfo:
     polling_address: int
@@ -73,14 +77,14 @@ class HartIPClient:
             try:
                 self._sock = socket.create_connection((self.host, self.port), self.timeout)
             except OSError as exc:
-                raise HartError(f"cannot connect to {self.host}:{self.port}: {exc}") from exc
+                raise HartConnectionError(f"cannot connect to {self.host}:{self.port}: {exc}") from exc
         else:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 sock.connect((self.host, self.port))
             except OSError as exc:  # e.g. socket.gaierror for an unknown host name
                 sock.close()
-                raise HartError(f"cannot reach {self.host}:{self.port}: {exc}") from exc
+                raise HartConnectionError(f"cannot reach {self.host}:{self.port}: {exc}") from exc
             self._sock = sock
         try:
             body = bytes([1 if self.primary else 0]) + struct.pack(">I", _DEFAULT_INACTIVITY_MS)
@@ -131,16 +135,16 @@ class HartIPClient:
                 raise HartTimeout("no answer") from None
             except OSError as exc:
                 self._close_socket()
-                raise HartError(f"connection lost: {exc}") from exc
+                raise HartConnectionError(f"connection lost: {exc}") from exc
             if not chunk:
                 self._close_socket()
-                raise HartError("connection closed by the server")
+                raise HartConnectionError("connection closed by the server")
             buf += chunk
         return buf
 
     def _exchange(self, msg_id: int, body: bytes, timeout: float) -> tuple[hartip.Header, bytes]:
         if self._sock is None:
-            raise HartError("client is not connected")
+            raise HartConnectionError("client is not connected")
         self._seq = (self._seq + 1) & 0xFFFF
         seq = self._seq
         message = hartip.encode_message(hartip.REQUEST, msg_id, seq, body)
@@ -149,7 +153,7 @@ class HartIPClient:
             self._sock.sendall(message)
         except OSError as exc:
             self._close_socket()
-            raise HartError(f"connection lost: {exc}") from exc
+            raise HartConnectionError(f"connection lost: {exc}") from exc
         while True:
             if self.transport == "tcp":
                 raw = self._recv_exact(hartip.HEADER_SIZE, deadline)
