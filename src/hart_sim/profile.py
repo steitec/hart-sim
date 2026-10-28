@@ -211,7 +211,7 @@ def _build(raw: dict[str, Any]) -> Profile:
 
     return Profile(
         kind=raw["kind"],
-        manufacturer_id=_int(raw["manufacturer_id"], "manufacturer_id", 0, 0xFF),
+        manufacturer_id=_int(raw["manufacturer_id"], "manufacturer_id", 0, 0xFFFF),
         device_type=_int(raw["device_type"], "device_type", 0, 0xFFFF),
         device_revision=_int(raw["device_revision"], "device_revision", 0, 255),
         software_revision=_int(raw.get("software_revision", 1), "software_revision", 0, 255),
@@ -249,4 +249,9 @@ def load_profile(name_or_path: str | Path, overrides: dict | None = None) -> Pro
         raise ProfileError(f"{path}: expected a mapping at top level")
     if overrides:
         raw = {**raw, **overrides}
+        pv = raw.get("pv")
+        if isinstance(pv, dict):
+            # An override of a pv-nested key replaces the nested value.
+            raw["pv"] = {k: v for k, v in pv.items()
+                         if not (k in _PV_TO_TOP and k in overrides)}
     return _build(raw)

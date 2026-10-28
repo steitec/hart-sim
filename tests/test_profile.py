@@ -56,14 +56,26 @@ def test_rejects_unknown_unit(tmp_path):
 
 
 def test_rejects_range_outside_sensor_limits():
-    with pytest.raises(ProfileError, match="range"):
+    with pytest.raises(ProfileError, match="range: must lie within sensor_limits"):
         load_profile("pressure", {"range": [0, 5000]})
 
 
+def test_overrides_applied():
+    p = load_profile("pressure", {"range": [0, 600], "damping": 2.0,
+                                  "sensor_limits": [-50, 1000]})
+    assert p.range == (0, 600) and p.damping == 2.0 and p.sensor_limits == (-50, 1000)
+
+
+def test_manufacturer_id_16_bit():
+    assert load_profile("pressure", {"manufacturer_id": 0x1234}).manufacturer_id == 0x1234
+
+
 def test_rejects_bad_range_and_values():
-    for ov, key in [({"range": [10, 10]}, "range"), ({"range": [float("nan"), 5]}, "range"),
-                    ({"damping": -1}, "damping"), ({"alarm": "mid"}, "alarm"),
-                    ({"min_span": 0}, "min_span")]:
+    for ov, key in [({"range": [10, 10]}, "range: LRV must be below URV"),
+                    ({"range": [float("nan"), 5]}, r"range\[0\]: must be finite"),
+                    ({"damping": -1}, "damping: must be >= 0"),
+                    ({"alarm": "mid"}, "alarm: must be"),
+                    ({"min_span": 0}, "min_span: must be > 0")]:
         with pytest.raises(ProfileError, match=key):
             load_profile("pressure", ov)
 
