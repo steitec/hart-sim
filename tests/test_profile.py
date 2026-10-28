@@ -110,3 +110,15 @@ def test_rejects_bad_source(tmp_path):
 def test_unknown_profile_name():
     with pytest.raises(ProfileError):
         load_profile("nope")
+
+
+def test_readme_profile_example_loads(tmp_path):
+    import re
+    from pathlib import Path
+    from hart_sim.profile import load_profile
+    readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+    section = readme.split("\n## Profiles\n", 1)[1].split("\n## ", 1)[0]
+    block = re.search(r"```yaml\n(.*?)```", section, re.S).group(1)
+    path = tmp_path / "readme.yaml"
+    path.write_text(block, encoding="utf-8")
+    assert load_profile(str(path)).tag == "PT-101"

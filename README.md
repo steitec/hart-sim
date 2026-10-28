@@ -87,6 +87,7 @@ A profile describes one device type in YAML. Two are bundled:
 kind: pressure-transmitter
 manufacturer_id: 0x00FA      # deliberately not a real manufacturer
 device_type: 0xFA01
+device_revision: 1
 tag: PT-101
 long_tag: "Pump 1 discharge pressure"
 descriptor: "SIM PRESSURE"

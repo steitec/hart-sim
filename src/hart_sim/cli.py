@@ -67,8 +67,8 @@ def _parser() -> argparse.ArgumentParser:
 
     inject = commands.add_parser("inject", help="inject a fault into a running bench")
     inject.add_argument("tag")
-    inject.add_argument("kind", help="e.g. sensor_failure, drift, stuck, noise")
-    inject.add_argument("params", nargs="*", metavar="KEY=VALUE", help="fault parameters, e.g. rate=0.5")
+    inject.add_argument("kind", help="e.g. sensor_failure, saturate, busy, drift, no_response, delay")
+    inject.add_argument("params", nargs="*", metavar="KEY=VALUE", help="fault parameters, e.g. per_second=0.5 or direction=high")
     control_args(inject)
 
     clear = commands.add_parser("clear", help="clear one fault or all faults of a device")

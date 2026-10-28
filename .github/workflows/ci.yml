@@ -30,4 +30,5 @@ jobs:
           python-version: "3.13"
       - run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
       - run: pip install -e ".[dev]"
-      - run: pytest -v -m tshark
+      - run: tshark -v
+      - run: pytest -v -rs -m tshark

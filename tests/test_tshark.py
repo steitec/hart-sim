@@ -148,5 +148,10 @@ def test_payloads_of_commands_3_and_35(pcap):
     # command 3 response (raw bytes): loop current, PV unit, PV, SV unit, SV
     payload3 = bytes.fromhex(rows[3][1])
     assert len(payload3) == 14 and payload3[4] == 12 and payload3[9] == 32
+    current, pv, sv = (struct.unpack(">f", payload3[a:a + 4])[0] for a in (0, 5, 10))
+    assert 3.8 <= current <= 20.5 and -100 <= pv <= 2500   # pressure profile
+    assert sv == pytest.approx(23.5)                       # constant SV source
+    percent = (pv - 0.0) / (1000.0 - 0.0) * 16 + 4         # default range 0..1000 kPa
+    assert current == pytest.approx(percent, abs=0.5)
     # command 35 request: unit kPa, URV 600.0, LRV 0.0 (IEEE 754 single, big endian)
     assert rows[4][1] == "0c4416000000000000"
