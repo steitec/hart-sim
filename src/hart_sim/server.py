@@ -23,7 +23,7 @@ STATUS_INVALID_SELECTION = 2
 STATUS_ALL_SESSIONS_IN_USE = 15
 STATUS_ACCESS_RESTRICTED = 16
 _READ_TIMEOUT = 5.0  # a message that started must finish within this
-_POLL = 0.2
+_POLL = 0.05
 _log = logging.getLogger(__name__)
 
 
@@ -66,7 +66,9 @@ class Server:
         self._tcp, self._udp = tcp, udp
         self._port = tcp.server_address[1]
         udp.settimeout(_POLL)
-        for target, name in ((tcp.serve_forever, "hart-sim-tcp"), (self._udp_loop, "hart-sim-udp")):
+        # A short poll interval keeps stop() fast (shutdown waits for one interval).
+        for target, name in ((lambda: tcp.serve_forever(poll_interval=0.05), "hart-sim-tcp"),
+                             (self._udp_loop, "hart-sim-udp")):
             thread = threading.Thread(target=target, name=name, daemon=True)
             thread.start()
             self._threads.append(thread)
