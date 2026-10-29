@@ -20,6 +20,20 @@ def bench():
         yield b
 
 
+def _second_loopback_available():
+    # macOS routes only 127.0.0.1 on lo0 unless an alias is configured.
+    with socket.socket() as sock:
+        try:
+            sock.bind(("127.0.0.2", 0))
+        except OSError:
+            return False
+    return True
+
+
+needs_127_0_0_2 = pytest.mark.skipif(not _second_loopback_available(),
+                                     reason="127.0.0.2 is not configured on this host")
+
+
 def ctl(bench, **req):
     return send_control(req, port=bench.control_port)
 
@@ -94,6 +108,7 @@ def test_control_set_sv_without_sv(tmp_path):
         assert r["ok"] is False and "sv" in r["error"]
 
 
+@needs_127_0_0_2
 def test_control_binds_loopback_regardless_of_host():
     bench = Bench.from_dict(PLANT)
     bench.start(host="127.0.0.2", port=0, control_port=0)
@@ -107,6 +122,7 @@ def test_control_binds_loopback_regardless_of_host():
         bench.stop()
 
 
+@needs_127_0_0_2
 def test_control_host_option():
     bench = Bench.from_dict(PLANT)
     bench.start(host="127.0.0.1", port=0, control_port=0, control_host="127.0.0.2")
@@ -121,9 +137,9 @@ def test_control_host_option():
 def test_control_line_too_long_closes_connection(bench):
     with socket.create_connection(("127.0.0.1", bench.control_port), timeout=5) as sock:
         sock.sendall(b'{"list": true, "pad": "' + b"x" * 70000)
-        stream = sock.makefile("rb")
-        assert json.loads(stream.readline()) == {"ok": False, "error": "line too long"}
-        assert stream.readline() == b""  # connection closed
+        with sock.makefile("rb") as stream:
+            assert json.loads(stream.readline()) == {"ok": False, "error": "line too long"}
+            assert stream.readline() == b""  # orderly close, no reset
     # a long but legal line still works, and the server keeps serving
     assert ctl(bench, list=True, pad="y" * 60000)["ok"]
 

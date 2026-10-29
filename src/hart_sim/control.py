@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 _SETTABLE = ("pv", "sv")
 _MAX_VALUE = 3.4e38  # keeps pv/sv inside what an IEEE single can carry
 _MAX_LINE = 65536  # bytes per request line, including the newline
+_DRAIN_BYTES = 1 << 20  # unread input swallowed before closing after "line too long"
+_DRAIN_TIMEOUT = 1.0
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -47,6 +49,7 @@ class _Handler(socketserver.StreamRequestHandler):
                 if len(raw) >= _MAX_LINE and not raw.endswith(b"\n"):
                     self.wfile.write(json.dumps({"ok": False, "error": "line too long"}).encode()
                                      + b"\n")
+                    self._close_gracefully()
                     return
                 if not raw.strip():
                     continue
@@ -54,6 +57,20 @@ class _Handler(socketserver.StreamRequestHandler):
                 self.wfile.write(json.dumps(answer).encode() + b"\n")
         except OSError:
             return
+
+    def _close_gracefully(self) -> None:
+        # Closing with unread input makes the kernel send RST (always on macOS), which can
+        # discard the error answer before the client reads it. Send FIN, then drain a bounded
+        # amount of the rest so the close is orderly.
+        self.wfile.flush()
+        self.request.shutdown(socket.SHUT_WR)
+        self.request.settimeout(_DRAIN_TIMEOUT)
+        drained = 0
+        while drained < _DRAIN_BYTES:
+            chunk = self.request.recv(65536)
+            if not chunk:
+                break
+            drained += len(chunk)
 
 
 class _Server(socketserver.ThreadingTCPServer):
