@@ -1,5 +1,10 @@
 # hart-sim
 
+[![CI](https://github.com/steitec/hart-sim/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/steitec/hart-sim/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/hart-sim)](https://pypi.org/project/hart-sim/)
+[![Python](https://img.shields.io/pypi/pyversions/hart-sim)](https://pypi.org/project/hart-sim/)
+[![License](https://img.shields.io/pypi/l/hart-sim)](https://github.com/steitec/hart-sim/blob/main/LICENSE)
+
 Simulated HART field devices, a pressure and a temperature transmitter, that
 speak HART-IP over TCP and UDP on port 5094. Develop and test HART software
 (control-system links, asset management, commissioning scripts, gateways)
