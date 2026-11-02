@@ -30,6 +30,9 @@ $ hart-sim cmd --tag PT-101 3
 status: device malfunction, more status available, PV out of limits | loop 21.00 mA | PV 416.9 kPa (bad) | SV 23.5 degC
 ```
 
+Walkthroughs, CI recipes and troubleshooting are in the
+[wiki](https://github.com/steitec/hart-sim/wiki); this README is the reference.
+
 ## Why
 
 HART software is usually written against the one real device on the bench, or
