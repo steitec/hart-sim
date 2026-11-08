@@ -5,6 +5,7 @@ import time
 import pytest
 
 from hart_sim import hartip
+from hart_sim import server as server_module
 from hart_sim.device import Device
 from hart_sim.frame import Address, Frame
 from hart_sim.profile import load_profile
@@ -395,3 +396,74 @@ def test_host_type_zero_and_one_accepted(server):
         header, body = u.request(hartip.SESSION_INITIATE, 1, struct.pack(">BI", host_type, 30000))
         assert header.status == 0 and body[0] == host_type
         u.close()
+
+
+class _UdpRefusedOnce(socket.socket):
+    """A UDP socket whose first bind fails like a port in a blocked range on Windows."""
+
+    refusals = 1
+
+    def bind(self, address):
+        if self.type == socket.SOCK_DGRAM and _UdpRefusedOnce.refusals:
+            _UdpRefusedOnce.refusals -= 1
+            raise PermissionError(10013, "forbidden")
+        super().bind(address)
+
+
+def _record_tcp_requests(monkeypatch) -> list[int]:
+    requested = []
+    original = server_module._TcpServer.__init__
+
+    def recording(self, address, handler, owner):
+        requested.append(address[1])
+        original(self, address, handler, owner)
+
+    monkeypatch.setattr(server_module._TcpServer, "__init__", recording)
+    return requested
+
+
+def test_free_port_retry_jumps_out_of_a_blocked_range(monkeypatch):
+    # Windows hands out free ports one after the other and can block 200 in a row for
+    # UDP, so asking for "any free port" again would only give the next blocked one.
+    monkeypatch.setattr(_UdpRefusedOnce, "refusals", 1)
+    monkeypatch.setattr(server_module.socket, "socket", _UdpRefusedOnce)
+    requested = _record_tcp_requests(monkeypatch)
+    srv = Server([], port=0)
+    srv.start()
+    try:
+        assert requested[0] == 0
+        assert len(requested) == 2 and 49152 <= requested[1] <= 65535
+        assert srv.port == requested[1]
+    finally:
+        srv.stop()
+
+
+def test_free_port_retry_survives_a_tcp_port_in_use(monkeypatch):
+    with socket.socket() as taken, socket.socket() as spare:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        spare.bind(("127.0.0.1", 0))
+        free = spare.getsockname()[1]
+        spare.close()
+        ports = iter([taken.getsockname()[1], free])
+        monkeypatch.setattr(server_module.random, "randint", lambda low, high: next(ports))
+        monkeypatch.setattr(_UdpRefusedOnce, "refusals", 1)
+        monkeypatch.setattr(server_module.socket, "socket", _UdpRefusedOnce)
+        srv = Server([], port=0)
+        srv.start()
+        try:
+            assert srv.port == free
+        finally:
+            srv.stop()
+
+
+def test_fixed_port_does_not_retry(monkeypatch):
+    monkeypatch.setattr(_UdpRefusedOnce, "refusals", 1)
+    monkeypatch.setattr(server_module.socket, "socket", _UdpRefusedOnce)
+    requested = _record_tcp_requests(monkeypatch)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with pytest.raises(PermissionError):
+        Server([], port=port).start()
+    assert requested == [port]
