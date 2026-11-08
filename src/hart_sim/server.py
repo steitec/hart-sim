@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import socket
 import socketserver
 import struct
@@ -24,6 +25,8 @@ STATUS_ALL_SESSIONS_IN_USE = 15
 STATUS_ACCESS_RESTRICTED = 16
 _READ_TIMEOUT = 5.0  # a message that started must finish within this
 _POLL = 0.05
+_FREE_PORT_ATTEMPTS = 10
+_DYNAMIC_PORTS = (49152, 65535)  # IANA dynamic range; also the Windows default
 _log = logging.getLogger(__name__)
 
 
@@ -51,16 +54,22 @@ class Server:
     def start(self) -> None:
         self._stopping.clear()
         tcp = udp = None
-        attempts = 10 if self._port == 0 else 1
+        attempts = _FREE_PORT_ATTEMPTS if self._port == 0 else 1
         for attempt in range(attempts):
-            tcp = _TcpServer((self.host, self._port), _Handler, self)
-            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # The second try on: Windows gives out free ports one after the other and can
+            # block 200 in a row for one protocol, so "any free port" stays inside the block.
+            port = self._port if attempt == 0 else random.randint(*_DYNAMIC_PORTS)
+            tcp = udp = None
             try:
+                tcp = _TcpServer((self.host, port), _Handler, self)
+                udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 udp.bind((self.host, tcp.server_address[1]))
                 break
             except OSError:
-                tcp.server_close()
-                udp.close()
+                if tcp is not None:
+                    tcp.server_close()
+                if udp is not None:
+                    udp.close()
                 if attempt == attempts - 1:
                     raise
         self._tcp, self._udp = tcp, udp
