@@ -432,27 +432,28 @@ def test_free_port_retry_jumps_out_of_a_blocked_range(monkeypatch):
     srv.start()
     try:
         assert requested[0] == 0
-        assert len(requested) == 2 and 49152 <= requested[1] <= 65535
-        assert srv.port == requested[1]
+        # A random port can be taken too, then the loop simply tries the next one.
+        assert len(requested) >= 2 and all(49152 <= port <= 65535 for port in requested[1:])
+        assert srv.port == requested[-1]
     finally:
         srv.stop()
 
 
 def test_free_port_retry_survives_a_tcp_port_in_use(monkeypatch):
-    with socket.socket() as taken, socket.socket() as spare:
+    with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
-        spare.bind(("127.0.0.1", 0))
-        free = spare.getsockname()[1]
-        spare.close()
-        ports = iter([taken.getsockname()[1], free])
-        monkeypatch.setattr(server_module.random, "randint", lambda low, high: next(ports))
+        occupied = taken.getsockname()[1]
+        real_randint = server_module.random.randint
+        answers = [occupied]
+        monkeypatch.setattr(server_module.random, "randint",
+                            lambda low, high: answers.pop() if answers else real_randint(low, high))
         monkeypatch.setattr(_UdpRefusedOnce, "refusals", 1)
         monkeypatch.setattr(server_module.socket, "socket", _UdpRefusedOnce)
         srv = Server([], port=0)
         srv.start()
         try:
-            assert srv.port == free
+            assert not answers and srv.port != occupied
         finally:
             srv.stop()
 
