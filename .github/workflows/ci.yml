@@ -35,3 +35,37 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: tshark -v
       - run: pytest -v -rs -m tshark
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install .
+      - name: Build and start the image
+        run: |
+          docker build -t hart-sim .
+          docker run -d --name sim -p 5094:5094 -p 5094:5094/udp -p 127.0.0.1:5095:5095 hart-sim
+      - name: Reports healthy once it answers
+        run: |
+          for _ in $(seq 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' sim)" = healthy ] && break; sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' sim)" = healthy
+      - name: HART-IP (TCP and UDP) and the control channel answer from outside the container
+        run: |
+          hart-sim poll | grep PT-101
+          hart-sim poll --udp | grep TT-201
+          hart-sim inject PT-101 sensor_failure
+          hart-sim cmd --tag PT-101 1 | grep 'device malfunction'
+          docker exec sim hart-sim clear PT-101
+          ! hart-sim cmd --tag PT-101 1 | grep 'device malfunction'
+      - name: Runs unprivileged and stops on SIGTERM
+        run: |
+          test "$(docker exec sim id -u)" = 10001
+          docker stop -t 5 sim
+          test "$(docker inspect -f '{{.State.ExitCode}}' sim)" = 0
+      - if: failure()
+        run: docker logs sim

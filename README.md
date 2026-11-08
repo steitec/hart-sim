@@ -251,6 +251,38 @@ connection is closed).
 connects. Binding either to `0.0.0.0` (or any non-loopback address) exposes the
 simulated devices to everyone who can reach the machine.
 
+## Docker
+
+For clients that are not written in Python: the image runs a pressure
+transmitter (`PT-101`, polling address 1) and a temperature transmitter
+(`TT-201`, polling address 2) behind one HART-IP port.
+
+```bash
+docker run --rm --name sim -p 5094:5094 -p 5094:5094/udp -p 127.0.0.1:5095:5095 ghcr.io/steitec/hart-sim
+```
+
+Publish both `5094` lines if your client uses both transports; Docker maps TCP
+and UDP separately. The control channel has no authentication, hence
+`127.0.0.1:` in front of it. It listens on all interfaces inside the container,
+so anything on the same Docker network can reach it. Inject a fault without
+installing anything, or send the [JSON lines](#control-channel) to port 5095
+from your own test code:
+
+```bash
+docker exec sim hart-sim inject PT-101 sensor_failure
+docker exec sim hart-sim clear PT-101
+```
+
+Your own bench file goes over the default one:
+
+```bash
+docker run --rm -p 5094:5094 -v ./bench.yaml:/bench/bench.yaml ghcr.io/steitec/hart-sim
+```
+
+The image is built with every release and tagged with the version and `latest`;
+pin the version in CI. It reports healthy once the HART-IP port accepts
+connections, so a service container in GitHub Actions is ready when your job starts.
+
 ## Python client
 
 A small HART-IP master, usable on its own against real gateways too:
