@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 0.1.1 - 2026-11-08
+
+- Docker image `ghcr.io/steitec/hart-sim`, built with every release: HART-IP on TCP and
+  UDP port 5094, control channel on 5095, unprivileged user, health check
+
 ## 0.1.0 - 2026-10-28
 
 - HART-IP version 1 server (TCP and UDP, port 5094) with simulated pressure and
