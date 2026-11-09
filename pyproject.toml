@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hart-sim"
-version = "0.1.1"
+version = "0.1.2"
 description = "Simulated HART field devices (pressure and temperature transmitters) speaking HART-IP"
 readme = "README.md"
 license = "MIT"
