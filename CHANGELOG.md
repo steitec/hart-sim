@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.2 - 2026-11-09
 
 - Port 0: when TCP and UDP cannot share the free port, further tries pick a random port.
   Windows can block 200 consecutive ports for one protocol, which ten tries in a row never left
