@@ -105,3 +105,178 @@ def test_poll_max_address(bench):
         assert [i.tag for i in client.poll(max_address=1)] == ["PT-101"]
         assert [i.tag for i in client.poll(max_address=3)] == ["PT-101", "TT-201"]
         assert [i.tag for i in client.poll([2])] == ["TT-201"]  # addresses= still works
+
+
+# --- burst: Publish handling and burst API ---------------------------------------------
+
+import socket
+import threading
+import time
+
+from hart_sim import hartip
+from hart_sim.client import BurstConfig, Publish
+from hart_sim.frame import Frame
+
+
+@pytest.fixture
+def single():
+    with Bench.single("pressure") as b:
+        yield b
+
+
+def _burst_client(single, **kw):
+    kw.setdefault("timeout", 1.0)
+    return HartIPClient("127.0.0.1", single.server.port, **kw)
+
+
+@pytest.mark.parametrize("transport", ["tcp", "udp"])
+def test_burst_end_to_end_tcp_and_udp(single, transport):
+    with _burst_client(single, transport=transport) as client:
+        handle = client.handle(0)
+        assert handle.subscribe() == 1
+        handle.burst(3, 0.1)
+        first = client.wait_burst(3, timeout=2.0)
+        second = client.wait_burst(3, timeout=2.0)
+        handle.burst_off()
+    assert isinstance(first, Publish) and first.frame.is_burst and first.frame.command == 3
+    assert 0.05 <= second.received - first.received <= 0.5
+
+
+def test_response_matched_while_publish_arrives_first(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.subscribe()
+        handle.burst(3, 0.1)
+        deadline = time.monotonic() + 0.6
+        reads = 0
+        while reads < 20 or time.monotonic() < deadline:
+            assert handle.read_variables().pv_unit is not None
+            reads += 1
+        assert len(client.publishes) >= 2
+        assert all(p.frame.is_burst for p in client.publishes)
+
+
+def test_publish_with_coinciding_sequence_is_not_a_response():
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def serve():
+        conn, _ = srv.accept()
+        with conn:
+            buf = b""
+            while True:
+                while len(buf) < 8 or len(buf) < hartip.decode_header(buf).byte_count:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        return
+                    buf += chunk
+                header = hartip.decode_header(buf)
+                buf = buf[header.byte_count:]
+                if header.msg_id == hartip.SESSION_INITIATE:
+                    conn.sendall(hartip.encode_message(hartip.RESPONSE, header.msg_id,
+                                                       header.sequence, b"\x01\x00\x00\xea\x60"))
+                elif header.msg_id == hartip.PDU:
+                    burst = Frame(Address.long(0xFA01, 1, burst=True), 1, b"\x00\x00",
+                                  True, 0, 0, True).encode()
+                    # Publish first, with the very sequence number of the pending request.
+                    conn.sendall(hartip.encode_message(hartip.PUBLISH, hartip.PDU,
+                                                       header.sequence, burst))
+                    reply = Frame(Address.long(0xFA01, 1), 1, b"\x07", True, 0, 0).encode()
+                    conn.sendall(hartip.encode_message(hartip.RESPONSE, hartip.PDU,
+                                                       header.sequence, reply))
+                else:
+                    return
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    with HartIPClient("127.0.0.1", srv.getsockname()[1], timeout=1.0) as client:
+        frame = client.command(Address.long(0xFA01, 1), 1)
+        assert frame.data == b"\x07" and not frame.is_burst
+        assert len(client.publishes) == 1 and client.publishes[0].frame.data == b"\x00\x00"
+    srv.close()
+
+
+def test_wait_burst_filters_by_command(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.subscribe()
+        handle.burst(1, 0.1, message=0)
+        handle.burst(3, 0.1, message=1)
+        got = client.wait_burst(3, timeout=2.0)
+        assert got.frame.command == 3
+        assert any(p.frame.command == 1 for p in client.publishes) or \
+            client.wait_burst(1, timeout=2.0).frame.command == 1
+        handle.burst_off(0)
+        handle.burst_off(1)
+
+
+def test_wait_burst_timeout(single):
+    with _burst_client(single) as client:
+        client.handle(0).subscribe()
+        started = time.monotonic()
+        with pytest.raises(HartTimeout):
+            client.wait_burst(timeout=0.2)
+        assert time.monotonic() - started < 1.0
+        # The session is still usable after a timeout.
+        assert client.handle(0).read_variables() is not None
+
+
+def test_burst_config_roundtrip(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.burst(3, 0.1, max_period=5.0, message=1)
+        cfg = handle.burst_config(1)
+        assert cfg == BurstConfig(control=1, command=3, slots=cfg.slots, period=0.1,
+                                  max_period=5.0, trigger_mode=0, trigger_class=cfg.trigger_class,
+                                  trigger_unit=cfg.trigger_unit, trigger_level=0.0)
+        handle.burst(33, 0.2, variables=[0, 250], message=2, trigger=2, level=1.5)
+        cfg = handle.burst_config(2)
+        assert (cfg.command, cfg.slots[:2], cfg.period, cfg.trigger_mode, cfg.trigger_level) == (
+            33, (0, 250), 0.2, 2, 1.5)
+        assert cfg.trigger_unit != 0 and cfg.trigger_class != 0
+        handle.burst_off(1)
+        handle.burst_off(2)
+        assert handle.burst_config(1).control == 0
+
+
+def test_burst_adjusted_period_is_accepted_and_bad_command_raises(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.burst(3, 0.01)  # raised to 0.1 s: warning code 8
+        assert handle.burst_config().period == pytest.approx(0.1)
+        with pytest.raises(HartError, match="command 108.*2"):
+            handle.burst(5, 1.0)
+        handle.burst_off()
+
+
+def test_burst_off_stops_publishes(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.subscribe()
+        handle.burst(3, 0.1)
+        client.wait_burst(3, timeout=2.0)
+        handle.burst_off()
+        client.handle(0).read_variables()  # round trip: the off command is applied
+        client.publishes.clear()
+        with pytest.raises(HartTimeout):
+            client.wait_burst(timeout=0.4)
+
+
+def test_subscribe_unknown_device_raises(single):
+    with _burst_client(single, timeout=0.3) as client:
+        handle = client.handle(0)
+        # No device answers at an unknown address, so nothing can be subscribed through it.
+        with pytest.raises(HartError):
+            client.subscribe(Address.long(0x1234, 99), all_devices=False)
+        # A known device relays an unknown unique ID: the server answers code 65.
+        bad = bytes([0x12, 0x34, 0, 0, 99]) + b"\x00\x01"
+        assert client.command(handle.address, 533, bad).response_code == 65
+
+
+def test_subscribe_conflict_raises(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        assert client.subscribe(handle.address) == 1  # all devices
+        with pytest.raises(HartError, match="533.*9"):
+            handle.subscribe()  # individual next to a broadcast subscription

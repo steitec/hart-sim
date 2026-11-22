@@ -2,6 +2,7 @@
 as an independent tool against real gateways."""
 from __future__ import annotations
 
+import collections
 import socket
 import struct
 import time
@@ -13,6 +14,17 @@ from .frame import Address, Frame, FrameError, pack_ascii, pack_float, unpack_as
 
 _DEFAULT_INACTIVITY_MS = 60_000
 _POLL_TIMEOUT = 0.2
+
+# Subscription flags of command 533 (same values as hart_sim.server; the client does not import
+# the server).
+PROCESS_DATA = 0x0001  # bursts of commands 1, 2, 3, 9, 33
+DEVICE_STATUS = 0x0004  # bursts of command 48
+
+_TIME_UNIT = 32000  # HART "Time": unsigned 32 bit, 1/32 ms
+_UNUSED_SLOT = 250
+_DEFAULT_MAX_PERIOD = 60.0
+_WARNING_ADJUSTED = 8  # "update times adjusted" (command 103)
+_MAX_PUBLISHES = 1000
 
 _STATUS_BITS = [
     (0x80, "device malfunction"),
@@ -58,6 +70,27 @@ class Variables:
     status: int
 
 
+@dataclass(frozen=True)
+class Publish:
+    """A burst frame received in a HART-IP Publish message."""
+    frame: Frame
+    received: float  # time.monotonic() when it was read
+
+
+@dataclass(frozen=True)
+class BurstConfig:
+    """Burst message configuration as read with command 105 (times in seconds)."""
+    control: int
+    command: int
+    slots: tuple[int, ...]
+    period: float
+    max_period: float
+    trigger_mode: int
+    trigger_class: int
+    trigger_unit: int
+    trigger_level: float
+
+
 class HartIPClient:
     def __init__(self, host: str = "127.0.0.1", port: int = hartip.PORT,
                  transport: str = "tcp", timeout: float = 2.0, primary: bool = True) -> None:
@@ -67,6 +100,9 @@ class HartIPClient:
         self.timeout, self.primary = timeout, primary
         self._sock: socket.socket | None = None
         self._seq = 0
+        self._rx = bytearray()  # TCP bytes read but not yet part of a complete message
+        # Publish messages read while waiting for something else, oldest first.
+        self.publishes: collections.deque[Publish] = collections.deque(maxlen=_MAX_PUBLISHES)
 
     # --- session ---
 
@@ -109,6 +145,7 @@ class HartIPClient:
 
     def _close_socket(self) -> None:
         sock, self._sock = self._sock, None
+        self._rx.clear()
         if sock is not None:
             try:
                 sock.close()
@@ -124,16 +161,17 @@ class HartIPClient:
 
     # --- transport ---
 
-    def _recv_exact(self, count: int, deadline: float) -> bytes:
+    def _fill(self, count: int, deadline: float) -> None:
+        """Read until `_rx` holds `count` bytes. Bytes read stay buffered if time runs out, so
+        a timeout never leaves the stream in the middle of a message."""
         sock = self._sock
-        buf = b""
-        while len(buf) < count:
+        while len(self._rx) < count:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise HartTimeout("no answer")
             sock.settimeout(remaining)
             try:
-                chunk = sock.recv(count - len(buf))
+                chunk = sock.recv(max(count - len(self._rx), 4096))
             except socket.timeout:
                 raise HartTimeout("no answer") from None
             except OSError as exc:
@@ -142,8 +180,48 @@ class HartIPClient:
             if not chunk:
                 self._close_socket()
                 raise HartConnectionError("connection closed by the server")
-            buf += chunk
-        return buf
+            self._rx += chunk
+
+    def _read_message(self, deadline: float) -> tuple[hartip.Header, bytes]:
+        """Next complete HART-IP message (any type) before `deadline`."""
+        if self._sock is None:
+            raise HartConnectionError("client is not connected")
+        if self.transport == "tcp":
+            self._fill(hartip.HEADER_SIZE, deadline)
+            try:
+                header = hartip.decode_header(bytes(self._rx[:hartip.HEADER_SIZE]))
+            except hartip.HartIPError as exc:
+                self._close_socket()
+                raise HartError(str(exc)) from exc
+            self._fill(header.byte_count, deadline)
+            payload = bytes(self._rx[hartip.HEADER_SIZE:header.byte_count])
+            del self._rx[:header.byte_count]
+            return header, payload
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HartTimeout("no answer")
+            self._sock.settimeout(remaining)
+            try:
+                data = self._sock.recv(65535)
+            except socket.timeout:
+                raise HartTimeout("no answer") from None
+            except OSError:
+                continue  # e.g. ICMP port unreachable from an earlier datagram
+            try:
+                header = hartip.decode_header(data)
+            except hartip.HartIPError:
+                continue
+            return header, data[hartip.HEADER_SIZE:header.byte_count]
+
+    def _queue_publish(self, header: hartip.Header, payload: bytes) -> None:
+        if header.msg_id != hartip.PDU:
+            return
+        try:
+            frame = Frame.decode(payload)
+        except FrameError:
+            return  # not a usable burst frame: drop it
+        self.publishes.append(Publish(frame, time.monotonic()))
 
     def _exchange(self, msg_id: int, body: bytes, timeout: float) -> tuple[hartip.Header, bytes]:
         if self._sock is None:
@@ -158,33 +236,48 @@ class HartIPClient:
             self._close_socket()
             raise HartConnectionError(f"connection lost: {exc}") from exc
         while True:
-            if self.transport == "tcp":
-                raw = self._recv_exact(hartip.HEADER_SIZE, deadline)
-                try:
-                    header = hartip.decode_header(raw)
-                except hartip.HartIPError as exc:
-                    self._close_socket()
-                    raise HartError(str(exc)) from exc
-                payload = self._recv_exact(header.byte_count - hartip.HEADER_SIZE, deadline)
-            else:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise HartTimeout("no answer")
-                self._sock.settimeout(remaining)
-                try:
-                    data = self._sock.recv(65535)
-                except socket.timeout:
-                    raise HartTimeout("no answer") from None
-                except OSError:
-                    continue  # e.g. ICMP port unreachable from an earlier datagram
-                try:
-                    header = hartip.decode_header(data)
-                except hartip.HartIPError:
-                    continue
-                payload = data[hartip.HEADER_SIZE:header.byte_count]
+            header, payload = self._read_message(deadline)
+            if header.msg_type == hartip.PUBLISH:
+                # Publish numbers are the server's own counter: never a response, even if the
+                # number coincides with the request's.
+                self._queue_publish(header, payload)
+                continue
             if header.sequence != seq:
                 continue  # stale or foreign reply
             return header, payload
+
+    # --- burst ---
+
+    def wait_burst(self, command: int | None = None, timeout: float | None = None) -> Publish:
+        """Oldest queued Publish of `command` (any command if None), else wait for one.
+        Publishes of other commands stay queued. Raises HartTimeout."""
+        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        while True:
+            for item in self.publishes:
+                if command is None or item.frame.command == command:
+                    self.publishes.remove(item)
+                    return item
+            header, payload = self._read_message(deadline)
+            if header.msg_type == hartip.PUBLISH:
+                self._queue_publish(header, payload)
+
+    def subscribe(self, address: Address, flags: int = PROCESS_DATA,
+                  all_devices: bool = True) -> int:
+        """Command 533 through the device at `address` (any device of the server).
+        Subscribes to all devices or only to the one at `address`. Returns the flags."""
+        if all_devices:
+            uid = bytes(5)
+        else:
+            if address.unique_id is None:
+                raise ValueError("a single-device subscription needs a long address")
+            dev_type, dev_id = address.unique_id
+            uid = bytes([(dev_type >> 8) & 0x3F, dev_type & 0xFF]) + dev_id.to_bytes(3, "big")
+        frame = self.command(address, 533, uid + struct.pack(">H", flags))
+        if frame.response_code != 0:
+            raise HartError(f"command 533: response code {frame.response_code}")
+        if len(frame.data) < 7:
+            raise HartError("command 533: response too short")
+        return int.from_bytes(frame.data[5:7], "big")
 
     # --- commands ---
 
@@ -262,9 +355,9 @@ class DeviceHandle:
     def __init__(self, client: HartIPClient, address: Address) -> None:
         self.client, self.address = client, address
 
-    def _ok(self, number: int, data: bytes = b"") -> Frame:
+    def _ok(self, number: int, data: bytes = b"", accept: tuple[int, ...] = (0,)) -> Frame:
         frame = self.client.command(self.address, number, data)
-        if frame.response_code != 0:
+        if frame.response_code not in accept:
             raise HartError(f"command {number}: response code {frame.response_code}")
         return frame
 
@@ -295,3 +388,62 @@ class DeviceHandle:
     @staticmethod
     def status_text(status: int) -> list[str]:
         return [text for bit, text in _STATUS_BITS if status & bit]
+
+    # --- burst mode ---
+
+    def subscribe(self, flags: int = PROCESS_DATA) -> int:
+        """Subscribe this session to this device's bursts (command 533). Returns the flags."""
+        return self.client.subscribe(self.address, flags, all_devices=False)
+
+    def burst(self, command: int, period: float, *, max_period: float | None = None,
+              variables: list[int] | None = None, message: int = 0, trigger: int = 0,
+              level: float = 0.0) -> None:
+        """Configure burst `message` and switch it on: 108, 107 (if `variables`), 103,
+        104 (if `trigger`), 109. `max_period` defaults to 60 s (at least `period`). A trigger
+        needs the unit and classification of the message's first variable, which are read
+        from the device (commands 3 and 8). Response code 8 (times adjusted) is accepted."""
+        index = bytes([message])
+        self._ok(108, command.to_bytes(2, "big") + index)
+        if variables is not None:
+            if len(variables) > 8:
+                raise ValueError("a burst message has at most 8 device variable slots")
+            self._ok(107, bytes(list(variables) + [_UNUSED_SLOT] * (8 - len(variables))) + index)
+        if max_period is None:
+            max_period = max(period, _DEFAULT_MAX_PERIOD)
+        self._ok(103, index + _to_time(period).to_bytes(4, "big")
+                 + _to_time(max_period).to_bytes(4, "big"), accept=(0, _WARNING_ADJUSTED))
+        if trigger:
+            first = variables[0] if variables else self.burst_config(message).slots[0]
+            unit, klass = self._slot_unit_class(first)
+            self._ok(104, bytes([message, trigger, klass, unit]) + pack_float(level))
+        self._ok(109, bytes([1]) + index)
+
+    def burst_off(self, message: int = 0) -> None:
+        self._ok(109, bytes([0, message]))
+
+    def burst_config(self, message: int = 0) -> BurstConfig:
+        """Command 105 (layout: spec section 3.3)."""
+        d = self._ok(105, bytes([message])).data
+        if len(d) < 29:
+            raise HartError("command 105: response too short")
+        return BurstConfig(d[0], int.from_bytes(d[12:14], "big"), tuple(d[2:10]),
+                           int.from_bytes(d[14:18], "big") / _TIME_UNIT,
+                           int.from_bytes(d[18:22], "big") / _TIME_UNIT,
+                           d[22], d[23], d[24], unpack_float(d[25:29]))
+
+    def _slot_unit_class(self, slot_code: int) -> tuple[int, int]:
+        """(unit, classification) of PV (codes 0, 246) or SV (1, 247), via commands 3 and 8."""
+        is_sv = slot_code in (1, 247)
+        d3 = self._ok(3).data
+        d8 = self._ok(8).data
+        if is_sv:
+            if len(d3) < 14 or len(d8) < 2:
+                raise HartError("the device has no SV to trigger on")
+            return d3[9], d8[1]
+        if len(d3) < 9 or len(d8) < 1:
+            raise HartError("command 3/8: response too short")
+        return d3[4], d8[0]
+
+
+def _to_time(seconds: float) -> int:
+    return min(round(seconds * _TIME_UNIT), 0xFFFFFFFF)
