@@ -128,6 +128,20 @@ class Bench:
         self.server, self.control = server, control
         self.control_port = control.port
 
+    def find(self, name: str) -> Device | None:
+        """The device whose current tag is `name`, else the one started under that tag.
+
+        Command 18 renames a device but the `devices` keys stay the original tags. If a
+        device was renamed to another device's original tag, the renamed one wins.
+        """
+        matches = [(key, dev) for key, dev in self.devices.items() if dev.tag == name]
+        for key, device in matches:
+            if key != name:
+                return device
+        if matches:
+            return matches[0][1]
+        return self.devices.get(name)
+
     def client(self, **kwargs):
         """A connected HartIPClient for the running bench; closed when the bench stops.
 
@@ -149,10 +163,12 @@ class Bench:
             client.close()
         control, server = self.control, self.server
         self.control = self.server = None
-        if control is not None:
-            control.stop()
-        if server is not None:
-            server.stop()
+        try:
+            if control is not None:
+                control.stop()
+        finally:
+            if server is not None:
+                server.stop()
 
     def __enter__(self) -> "Bench":
         """Start on free ports (0/0) so tests never collide; use start() for fixed ports."""
