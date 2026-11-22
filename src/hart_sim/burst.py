@@ -34,6 +34,23 @@ def default_slots(has_sv: bool) -> list[int]:
     return [0, 1 if has_sv else UNUSED_SLOT] + [UNUSED_SLOT] * (SLOTS - 2)
 
 
+def should_send(msg: "BurstMessage", value: float | None, now: float) -> bool:
+    """Whether a due message sends a frame now (pure; ``value`` is slot 0's variable)."""
+    if msg.trigger_mode == CONTINUOUS:
+        return True
+    if msg.last_sent is None or now - msg.last_sent >= msg.max_period:
+        return True
+    if value is None:
+        return False
+    if msg.trigger_mode == WINDOW:
+        return msg.last_value is None or abs(value - msg.last_value) >= msg.trigger_level
+    if msg.trigger_mode == RISING:
+        return value > msg.trigger_level
+    if msg.trigger_mode == FALLING:
+        return value < msg.trigger_level
+    return value != msg.last_value  # ON_CHANGE
+
+
 @dataclass
 class BurstMessage:
     control: int = 0  # 0 = off, 1..4 = on (command 109)
