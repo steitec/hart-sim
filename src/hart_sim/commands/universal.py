@@ -242,16 +242,22 @@ def cmd38(dev, data, primary):
     return 0, dev.config_counter.to_bytes(2, "big")
 
 
-@register(48)
-def cmd48(dev, data, primary):
+def additional_status(dev) -> bytes:
+    """Command 48 data without side effects (also used for burst frames)."""
     state = dev.loop()
     more = dev.faults.active("more_status")
     specific = bytearray(more["bytes"] if more else bytes(6))
     if dev.faults.active("sensor_failure") is not None:
         specific[0] |= 0x01
+    ext = 0x02 if _variable_alert(dev) else 0
+    return bytes(specific) + bytes([ext, 0, 0, 0, 1 if state.saturated else 0, 0, 0,
+                                    1 if state.fixed else 0])
+
+
+@register(48)
+def cmd48(dev, data, primary):
+    out = additional_status(dev)
     # Reading the additional status acknowledges "more status available".
     dev.faults.clear("more_status")
     dev.more_status_pending = False
-    ext = 0x02 if _variable_alert(dev) else 0
-    return 0, bytes(specific) + bytes([ext, 0, 0, 0, 1 if state.saturated else 0, 0, 0,
-                                1 if state.fixed else 0])
+    return 0, out

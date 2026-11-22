@@ -75,3 +75,35 @@ def test_non_utf8_bench_file_is_a_bench_error(tmp_path):
     path.write_bytes(b"devices:\n  - profile: \xff\xfe\n")
     with pytest.raises(BenchError, match="UTF-8"):
         Bench.from_yaml(path)
+
+
+def test_bench_stop_stops_server_when_control_stop_fails(monkeypatch):
+    bench = Bench.single("pressure")
+    bench.start(port=0, control_port=0)
+    server = bench.server
+    stopped = []
+    real_stop = server.stop
+    monkeypatch.setattr(server, "stop", lambda: (stopped.append(True), real_stop()))
+
+    def boom():
+        raise RuntimeError("control stop failed")
+
+    real_control_stop = bench.control.stop
+    monkeypatch.setattr(bench.control, "stop", boom)
+    with pytest.raises(RuntimeError, match="control stop failed"):
+        bench.stop()
+    real_control_stop()
+    assert stopped == [True]
+
+
+def test_bench_subscribe_all_key():
+    bench = Bench.from_dict({"subscribe_all": True, "devices": [entry(polling_address=0)]})
+    assert bench.publish_all is True
+    with bench:
+        assert bench.server.publish_all is True
+    with Bench.from_dict({"devices": [entry()]}) as plain:
+        assert plain.server.publish_all is False
+    with pytest.raises(BenchError, match="subscribe_all must be true or false"):
+        Bench.from_dict({"subscribe_all": "yes", "devices": [entry()]})
+    with pytest.raises(BenchError, match="allowed: devices, subscribe_all"):
+        Bench.from_dict({"bogus": 1, "devices": [entry()]})

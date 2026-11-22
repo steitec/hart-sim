@@ -4,10 +4,13 @@ One JSON object per line in, one per line out::
 
     {"device": "PT-101", "inject": "sensor_failure", "params": {}}  -> {"ok": true}
     {"device": "PT-101", "clear": true}      (or "clear": "drift")  -> {"ok": true}
+    {"device": "PT-101", "clear": "drift", "reset": true}   (also zeroes the drift offset)
     {"device": "PT-101", "set": {"pv": 123.4}}   (null = back to the sources; "sv" likewise)
-    {"list": true} -> {"ok": true, "devices": {"PT-101": {"faults": {...}, "pv": 400.0,
+    {"list": true} -> {"ok": true, "devices": {"PT-101": {"tag": "PT-101", "faults": {...}, "pv": 400.0,
                                                           "current_ma": 10.4,
-                                                          "polling_address": 1}}}
+                                                          "polling_address": 1,
+                                                          "burst": [{"message": 0, "on": true,
+                                                                     "command": 3, "period": 1.0}]}}}
 
 Anything invalid gets ``{"ok": false, "error": "..."}``; the connection stays open.
 """
@@ -29,6 +32,13 @@ _MAX_VALUE = 3.4e38  # keeps pv/sv inside what an IEEE single can carry
 _MAX_LINE = 65536  # bytes per request line, including the newline
 _DRAIN_BYTES = 1 << 20  # unread input swallowed before closing after "line too long"
 _DRAIN_TIMEOUT = 1.0
+
+
+def _finite(value: Any) -> Any:
+    """JSON has no NaN/inf; report them as null."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -54,7 +64,12 @@ class _Handler(socketserver.StreamRequestHandler):
                 if not raw.strip():
                     continue
                 answer = self.server.control.handle(raw)
-                self.wfile.write(json.dumps(answer).encode() + b"\n")
+                try:
+                    line = json.dumps(answer, allow_nan=False)
+                except ValueError:  # a NaN/inf slipped into the answer; keep the line valid JSON
+                    line = json.dumps({"ok": False,
+                                       "error": "internal: answer not serialisable"})
+                self.wfile.write(line.encode() + b"\n")
         except OSError:
             return
 
@@ -139,15 +154,18 @@ class ControlServer:
             return {"ok": True, "devices": {tag: self._describe(dev)
                                             for tag, dev in devices.items()}}
         name = request.get("device")
-        device = devices.get(name) if isinstance(name, str) else None
+        device = self.bench.find(name) if isinstance(name, str) else None
         if device is None:
             raise ValueError(f"unknown device {name!r} (bench has: {', '.join(devices)})")
         if "clear" in request and request["clear"]:
             kind = request["clear"]
+            reset = request.get("reset", False)
+            if not isinstance(reset, bool):
+                raise ValueError("'reset' must be true or false")
             if kind is True:
-                device.faults.clear()
+                device.faults.clear(reset=reset)
             elif isinstance(kind, str):
-                device.faults.clear(kind)
+                device.faults.clear(kind, reset=reset)
             else:
                 raise ValueError("'clear' must be true or a fault name")
         elif "inject" in request:
@@ -198,8 +216,11 @@ class ControlServer:
             current = device.loop().current_ma
             pv = device.pv.value()
             faults = device.faults.snapshot()
-        return {"faults": faults, "pv": pv, "current_ma": current,
-                "polling_address": device.polling_address}
+            burst = [{"message": i, "on": True, "command": m.command, "period": m.period}
+                     for i, m in enumerate(device.burst) if m.on]
+        return {"tag": device.tag, "faults": faults, "pv": _finite(pv),
+                "current_ma": _finite(current), "polling_address": device.polling_address,
+                "burst": burst}
 
 
 def send_control(request: dict, host: str = "127.0.0.1", port: int = 5095,

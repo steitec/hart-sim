@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import struct
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ HEADER_SIZE = 8
 # message types
 REQUEST = 0
 RESPONSE = 1
+PUBLISH = 2  # source: hipserver hsqueues.cpp (HARTIP_MSG_TYPE_PUBLISH)
 ERROR = 3
 NAK = 15
 
@@ -55,3 +57,15 @@ def decode_header(raw: bytes) -> Header:
     if count < HEADER_SIZE:
         raise HartIPError(f"byte count {count} is smaller than the header")
     return Header(version, msg_type, msg_id, status, sequence, count)
+
+
+def resolve(host: str, port: int, socktype: int) -> tuple[int, tuple]:
+    """Address family and socket address for host; "" is IPv4 any, IPv4 wins unless host is an IPv6 literal."""
+    if host == "":
+        return socket.AF_INET, ("", port)
+    infos = socket.getaddrinfo(host, port, type=socktype)
+    if ":" not in host:
+        for family, _, _, _, addr in infos:
+            if family == socket.AF_INET:
+                return family, addr
+    return infos[0][0], infos[0][4]

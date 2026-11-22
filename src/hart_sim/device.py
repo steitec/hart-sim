@@ -7,6 +7,9 @@ import time
 
 from . import commands
 from .commands import NoResponse, ShortData
+from .burst import SLOT_OF_CODE, UNUSED_SLOT, should_send
+from .commands.burst import initial_messages
+from .commands.universal import additional_status
 from .frame import Address, Frame, pack_ascii
 from .faults import FaultSet
 from .process import I_MAX, I_MIN, LoopState, Variable, loop_current
@@ -28,7 +31,7 @@ class Device:
         self.message = profile.message
         self.date: tuple[int, int, int] = (1, 1, 2026)
         self.final_assembly = 0
-        self.loop_current_mode = True  # True = enabled (not multidrop)
+        self.loop_current_mode = profile.loop_current == "enabled"  # True = enabled (not multidrop)
         self.lrv, self.urv = profile.range
         # Sensor limits and minimum span follow the PV unit (command 44).
         self.sensor_limits: tuple[float, float] = tuple(profile.sensor_limits)
@@ -45,6 +48,7 @@ class Device:
         self.reset_pending = False  # command 42: re-arm cold start after the reply
         self.more_status_pending = False  # "more status available" until command 48
         self.faults = FaultSet(self)
+        self.burst = initial_messages(self)
         self._cold_start = {_PRIMARY: True, _SECONDARY: True}
         self._config_changed = {_PRIMARY: False, _SECONDARY: False}
         # Reentrant: handle() holds it while handlers call loop()/status_byte().
@@ -61,6 +65,10 @@ class Device:
     @property
     def unique_id(self) -> tuple[int, int]:
         return self.profile.device_type, self.device_id
+
+    @property
+    def burst_on(self) -> bool:
+        return any(m.on for m in self.burst)
 
     def rearm_cold_start(self) -> None:
         with self.lock:
@@ -127,10 +135,66 @@ class Device:
         dev_type, dev_id = address.unique_id
         return (dev_type & 0x3FFF, dev_id) == (self.profile.device_type & 0x3FFF, self.device_id)
 
+    def _burst_value(self, msg) -> float | None:
+        slot = SLOT_OF_CODE.get(msg.slots[0])
+        var = self.pv if slot == 0 else self.sv if slot == 1 else None
+        return var.value() if var is not None else None
+
+    def _burst_frame(self, msg) -> Frame | None:
+        """Build one burst frame without side effects on cold start or more-status."""
+        used = bytes(c for c in msg.slots if c != UNUSED_SLOT)
+        if msg.command in (1, 2, 3):
+            code, data = commands.REGISTRY[msg.command][0](self, b"", _PRIMARY)
+        elif msg.command == 9:
+            code, data = commands.REGISTRY[9][0](self, used, _PRIMARY)
+        elif msg.command == 33:
+            code, data = commands.REGISTRY[33][0](self, used[:4], _PRIMARY)
+        else:  # 48
+            code, data = 0, additional_status(self)
+        if code != 0:
+            return None
+        return Frame(Address(None, self.unique_id, True, True), msg.command, data, True, 0,
+                     self.status_byte(True), is_burst=True)
+
+    def burst_due(self, now: float) -> list[Frame]:
+        """Frames of all burst messages that are due at ``now``; advances their schedules.
+
+        While the burst_stop fault is active the schedule keeps advancing without sending.
+        """
+        frames: list[Frame] = []
+        with self.lock:
+            stopped = self.faults.active("burst_stop") is not None
+            for msg in self.burst:
+                if not msg.on:
+                    continue
+                if msg.next_due is None:
+                    msg.next_due = now
+                if now < msg.next_due:
+                    continue
+                if not stopped:
+                    value = self._burst_value(msg)
+                    if should_send(msg, value, now):
+                        frame = self._burst_frame(msg)
+                        if frame is not None:
+                            frames.append(frame)
+                            msg.last_sent, msg.last_value = now, value
+                msg.next_due += msg.period
+                if msg.next_due <= now:
+                    msg.next_due = now + msg.period
+        return frames
+
+    def next_burst_due(self) -> float | None:
+        """Earliest due time of a running message (now for one that restarts), else None."""
+        with self.lock:
+            times = [self.clock() if m.next_due is None else m.next_due
+                     for m in self.burst if m.on]
+            return min(times) if times else None
+
     def _reply_address(self, request: Frame, primary: bool) -> Address:
         if request.address.is_broadcast:
-            return Address.long(*self.unique_id, primary)
-        return Address(request.address.polling, request.address.unique_id, primary)
+            return Address.long(*self.unique_id, primary, burst=self.burst_on)
+        return Address(request.address.polling, request.address.unique_id, primary,
+                       self.burst_on)
 
     def handle(self, request: Frame) -> Frame | None:
         """Answer a request. no_response and delay faults are the server's business."""
@@ -172,4 +236,5 @@ class Device:
             if self.reset_pending:
                 self.reset_pending = False
                 self.rearm_cold_start()
+            addr = self._reply_address(request, primary)  # burst bit as after the command (109)
             return Frame(addr, request.command, data, True, code, status)

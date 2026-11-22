@@ -107,3 +107,36 @@ def test_float_roundtrip_and_nan():
 
 def test_broadcast_address():
     assert Frame.decode(Frame(Address.broadcast(), 11, b"\0" * 6).encode()).address.is_broadcast
+
+
+def test_expanded_request_roundtrip():
+    f = Frame(Address.long(0x3A01, 1), 533, bytes(7))
+    raw = f.encode()
+    assert raw[6] == 31 and raw[7] == 9 and raw[8:10] == (533).to_bytes(2, "big")
+    assert Frame.decode(raw) == f
+
+
+def test_expanded_response_roundtrip():
+    f = Frame(Address.long(0x3A01, 1), 532, bytes(7), True, 0, 0x20)
+    raw = f.encode()
+    assert raw[8:12] == bytes([0, 0x20]) + (532).to_bytes(2, "big")
+    assert Frame.decode(raw) == f
+
+
+def test_burst_frame_roundtrip():
+    addr = Address(None, (0x3A01, 1), True, True)
+    f = Frame(addr, 3, b"\x01\x02", True, 0, 0x40, is_burst=True)
+    raw = f.encode()
+    assert raw[0] == 0x81 and raw[1] & 0xC0 == 0xC0
+    assert Frame.decode(raw) == f
+
+
+def test_command_31_with_short_data_is_rejected():
+    raw = Frame(Address.long(0xFA01, 1), 31, b"\x02").encode()  # only one data byte
+    with pytest.raises(FrameError):
+        Frame.decode(raw)
+
+
+def test_command_over_16_bits_is_rejected():
+    with pytest.raises(ValueError):
+        Frame(Address.long(0xFA01, 1), 0x10000).encode()

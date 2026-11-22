@@ -4,6 +4,7 @@ Run with: pytest -v examples/test_example.py
 """
 import pytest
 
+from burst_listen import listen
 from hart_sim.client import HartError
 
 
@@ -42,3 +43,10 @@ def test_hart_bench_factory_for_a_second_device(hart_bench_factory):
     bench = hart_bench_factory("temperature")
     with bench.client() as client:
         assert client.handle(0).read_variables().pv_unit == 32   # degC
+
+
+def test_burst_listen_receives_five_bursts(hart_bench):
+    with hart_bench.client() as client:
+        lines = listen(client, 0, count=5, period=0.1)
+    assert len(lines) == 5
+    assert all(line.startswith("loop ") and line.endswith(" kPa") for line in lines)

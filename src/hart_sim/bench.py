@@ -34,6 +34,7 @@ class Bench:
         self.server: Server | None = None
         self.control: ControlServer | None = None
         self.control_port = 0
+        self.publish_all = False  # bench key subscribe_all: Publish to every session
         self._clients: list = []
 
     # --- construction ---
@@ -61,10 +62,15 @@ class Bench:
     def from_dict(cls, d: dict, base: Path | None = None) -> "Bench":
         if not isinstance(d, dict) or not isinstance(d.get("devices"), list) or not d["devices"]:
             raise BenchError("a bench is a mapping with a non-empty 'devices' list")
-        unknown = set(d) - {"devices"}
+        unknown = set(d) - {"devices", "subscribe_all"}
         if unknown:
-            raise BenchError(f"unknown key {sorted(unknown)[0]!r} (allowed: devices)")
+            raise BenchError(f"unknown key {sorted(unknown)[0]!r} "
+                             "(allowed: devices, subscribe_all)")
+        publish_all = d.get("subscribe_all", False)
+        if not isinstance(publish_all, bool):
+            raise BenchError(f"subscribe_all must be true or false, got {publish_all!r}")
         bench = cls()
+        bench.publish_all = publish_all
         polling: dict[int, str] = {}
         ids: dict[tuple[int, int], str] = {}
         for index, entry in enumerate(d["devices"], 1):
@@ -117,7 +123,8 @@ class Bench:
         """
         if self.server is not None:
             raise BenchError("bench is already running")
-        server = Server(list(self.devices.values()), host=host, port=port)
+        server = Server(list(self.devices.values()), host=host, port=port,
+                        publish_all=self.publish_all)
         server.start()
         control = ControlServer(self, control_host, control_port)
         try:
@@ -128,6 +135,20 @@ class Bench:
         self.server, self.control = server, control
         self.control_port = control.port
 
+    def find(self, name: str) -> Device | None:
+        """The device whose current tag is `name`, else the one started under that tag.
+
+        Command 18 renames a device but the `devices` keys stay the original tags. If a
+        device was renamed to another device's original tag, the renamed one wins.
+        """
+        matches = [(key, dev) for key, dev in self.devices.items() if dev.tag == name]
+        for key, device in matches:
+            if key != name:
+                return device
+        if matches:
+            return matches[0][1]
+        return self.devices.get(name)
+
     def client(self, **kwargs):
         """A connected HartIPClient for the running bench; closed when the bench stops.
 
@@ -136,8 +157,9 @@ class Bench:
         from .client import HartIPClient
         if self.server is None:
             raise BenchError("bench is not running")
-        client = HartIPClient("127.0.0.1" if self.server.host in ("0.0.0.0", "") else self.server.host,
-                              self.server.port, **kwargs)
+        host = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}.get(
+            self.server.host, self.server.host)
+        client = HartIPClient(host, self.server.port, **kwargs)
         client.open()
         self._clients.append(client)
         return client
@@ -149,10 +171,12 @@ class Bench:
             client.close()
         control, server = self.control, self.server
         self.control = self.server = None
-        if control is not None:
-            control.stop()
-        if server is not None:
-            server.stop()
+        try:
+            if control is not None:
+                control.stop()
+        finally:
+            if server is not None:
+                server.stop()
 
     def __enter__(self) -> "Bench":
         """Start on free ports (0/0) so tests never collide; use start() for fixed ports."""

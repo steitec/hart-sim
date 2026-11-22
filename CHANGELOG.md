@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 - unreleased
+
+### Added
+
+- Burst mode: three burst messages per device with commands 103, 104, 105, 107, 108 and 109,
+  trigger modes (continuous, window, rising, falling, on change), burstable commands 1, 2, 3,
+  9, 33 and 48, burst bit in all replies while a message is on, and a `burst:` block in
+  profiles
+- HART-IP client subscriptions (commands 532 and 533) and Publish messages; the bench key
+  `subscribe_all` and `hart-sim serve --publish-all` send bursts to every session
+- Client: `wait_burst()`, `DeviceHandle.subscribe()`, `burst()`, `burst_off()`, `burst_config()`;
+  `wait_burst()` sends Keep Alive at half the negotiated inactivity time (new `inactivity_ms`
+  parameter, default 60000), so a listening session and its subscription do not expire
+- CLI: `hart-sim burst` and `hart-sim listen`; `hart-sim clear --reset` (and `"reset": true` in
+  the control channel) zeroes the drift offset
+- Fault `burst_stop`; `list` shows the running burst messages
+- Profile key `loop_current: fixed` (multidrop, 4 mA)
+- HART-IP over IPv6 (`--host ::`, `--host ::1`)
+- Expanded command numbers and burst frames in the frame codec; example
+  `examples/burst_listen.py`; Wireshark cross-check of Publish, burst frames and command 533
+
+### Fixed
+
+- Command 37 keeps the span instead of moving only the lower range value
+- A `delay` fault on UDP no longer delays the other UDP clients
+- `no_response` is consumed only by requests the device would answer
+- The control channel and `Bench.find` find a device renamed with command 18 or 22
+- `list` no longer produces invalid JSON for a NaN process value
+- `Bench.stop` stops the server even if stopping the control channel fails
+
 ## 0.1.2 - 2026-11-09
 
 - Port 0: when TCP and UDP cannot share the free port, further tries pick a random port.

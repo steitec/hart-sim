@@ -22,6 +22,8 @@ more_status     bytes (list of 6 ints, 0-255)                "more status availa
                                                              specific status
 drift           per_second (finite)                          the PV drifts by ``per_second`` units/s;
                                                              ``clear`` removes it
+burst_stop      -                                            burst mode is suspended (no burst frames) until
+                                                             cleared; the configuration is untouched
 write_protect   on (bool)                                    sets ``Device.write_protect``; one-shot
 ==============  ===========================================  ================================================
 """
@@ -141,6 +143,7 @@ FAULTS: dict[str, dict[str, tuple[Any, Callable[[Any], Any]]]] = {
     "cold_start": {},
     "more_status": {"bytes": (_REQUIRED, _six_bytes)},
     "drift": {"per_second": (_REQUIRED, _number)},
+    "burst_stop": {},
     "write_protect": {"on": (_REQUIRED, _bool)},
 }
 FAULT_KINDS = tuple(FAULTS)
@@ -200,7 +203,10 @@ class FaultSet:
     def _device_lock(self):
         return self._device.lock if self._device is not None else contextlib.nullcontext()
 
-    def clear(self, kind: str | None = None) -> None:
+    def clear(self, kind: str | None = None, reset: bool = False) -> None:
+        """Remove faults. ``reset=True`` also drops the drift offset already accumulated."""
+        if reset and kind not in (None, "drift"):
+            raise FaultError("reset applies to drift only")
         with self._device_lock(), self._lock:
             if kind is None:
                 kinds = list(self._active)
@@ -212,6 +218,8 @@ class FaultSet:
                 if k == "drift":
                     self._remove_drift()
                 self._active.pop(k, None)
+            if reset and self._device is not None and kind in (None, "drift"):
+                self._device.pv.reset_drift()  # also when the drift was cleared before
             if self._device is not None and not (
                     "sensor_failure" in self._active or "more_status" in self._active):
                 self._device.more_status_pending = False

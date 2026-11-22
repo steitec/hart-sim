@@ -181,3 +181,40 @@ def test_write_protect_string_reaches_device(dev):
     assert dev.write_protect is True
     dev.faults.inject("write_protect", on="off")
     assert dev.write_protect is False
+
+
+def _drift_device():
+    t = [0.0]
+    pv = {"name": "p", "unit": "kPa", "source": {"type": "constant", "value": 400},
+          "sensor_limits": [-100, 2500], "range": [0, 1000]}
+    d = Device(load_profile("pressure", {"pv": pv, "damping": 0}), clock=lambda: t[0])
+    return d, t
+
+
+def test_clear_drift_reset_returns_pv():
+    d, t = _drift_device()
+    before = d.pv.value()
+    d.faults.inject("drift", per_second=10)
+    t[0] += 5
+    assert d.pv.value() == pytest.approx(before + 50)
+    d.faults.clear("drift", reset=True)
+    assert d.pv.value() == pytest.approx(before, abs=1e-6)
+
+
+def test_clear_drift_without_reset_keeps_offset():
+    d, t = _drift_device()
+    before = d.pv.value()
+    d.faults.inject("drift", per_second=10)
+    t[0] += 5
+    d.faults.clear("drift")
+    assert d.pv.value() == pytest.approx(before + 50)
+
+
+def test_clear_all_with_reset_drops_drift_and_reset_other_kind_rejected():
+    d, t = _drift_device()
+    d.faults.inject("drift", per_second=10)
+    t[0] += 5
+    d.faults.clear(reset=True)
+    assert d.pv.value() == pytest.approx(400.0)
+    with pytest.raises(FaultError, match="reset applies to drift only"):
+        d.faults.clear("busy", reset=True)

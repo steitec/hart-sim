@@ -156,3 +156,58 @@ def test_control_rejects_overflowing_value(bench):
     for bad in (1e39, -1e39, 3.5e38):
         assert ctl(bench, device="PT-101", set={"pv": bad})["ok"] is False
     assert ctl(bench, device="PT-101", set={"pv": 3.4e38}) == {"ok": True}
+
+
+def test_device_found_by_renamed_tag(bench):
+    bench.devices["PT-101"].tag = "NEW-1"  # what command 18 does
+    assert bench.control.handle(b'{"device": "NEW-1", "inject": "busy"}') == {"ok": True}
+
+
+def test_current_tag_wins_over_original_tag(bench):
+    bench.devices["TT-201"].tag = "PT-101"
+    assert bench.find("PT-101") is bench.devices["TT-201"]
+    assert bench.find("nope") is None
+
+
+def test_find_falls_back_to_original_tag(bench):
+    bench.devices["PT-101"].tag = "NEW-1"
+    assert bench.find("PT-101") is bench.devices["PT-101"]
+
+
+def test_list_shows_current_tag(bench):
+    bench.devices["PT-101"].tag = "NEW-1"
+    entry = bench.control.handle(b'{"list": true}')["devices"]["PT-101"]
+    assert entry["tag"] == "NEW-1"
+
+
+def test_list_with_nan_pv_is_valid_json(bench):
+    bench.devices["PT-101"].pv.override(float("nan"))
+    raw = json.dumps(bench.control.handle(b'{"list": true}'), allow_nan=False)
+    assert json.loads(raw)["devices"]["PT-101"]["pv"] is None
+
+
+def test_list_with_nan_pv_over_the_socket(bench):
+    bench.devices["PT-101"].pv.override(float("nan"))
+    answer = ctl(bench, list=True)
+    assert answer["ok"] is True and answer["devices"]["PT-101"]["pv"] is None
+
+
+def test_clear_drift_reset_over_control(bench):
+    assert ctl(bench, device="PT-101", inject="drift", params={"per_second": 1.0}) == {"ok": True}
+    assert ctl(bench, device="PT-101", clear="drift", reset=True) == {"ok": True}
+
+
+def test_reset_with_other_fault_is_an_error(bench):
+    answer = ctl(bench, device="PT-101", clear="busy", reset=True)
+    assert answer["ok"] is False and "drift" in answer["error"]
+
+
+def test_reset_must_be_a_bool(bench):
+    answer = ctl(bench, device="PT-101", clear="drift", reset="yes")
+    assert answer["ok"] is False and "reset" in answer["error"]
+
+
+def test_unserialisable_answer_gets_an_error_line(bench, monkeypatch):
+    monkeypatch.setattr(bench.control, "handle", lambda raw: {"ok": True, "x": float("inf")})
+    answer = ctl(bench, list=True)
+    assert answer == {"ok": False, "error": "internal: answer not serialisable"}
