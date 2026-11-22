@@ -216,7 +216,27 @@ def test_dissector_decodes_publish_frames_as_command_3(burst_pcap):
 
 def test_dissector_decodes_subscription_and_burst_commands(burst_pcap):
     commands = [row[0] for row in _rows(burst_pcap, "hart_ip.pt.command")]
-    # 533 goes out expanded (command byte 31 + two-byte number). tshark 4.4 shows the command
-    # byte only, not the expanded number, so assert 31 (request and response).
-    assert commands.count("31") == 2
-    assert {"105", "109", "108", "103", "104"} <= set(commands)
+    assert commands.count("31") == 2 and {"105", "109", "108", "103", "104"} <= set(commands)
+    # 533 goes out expanded (command byte 31 + two-byte number); the dissector unfolds it into
+    # hart_ip.pt.rsp.command_number, for the request and the response.
+    numbers = tshark("-r", str(burst_pcap), "-Y", "hart_ip.pt.command == 31", "-T", "fields",
+                     "-e", "hart_ip.pt.rsp.command_number", "-e", "hart_ip.pt.rsp.data")
+    assert [line.split("\t")[0] for line in numbers.splitlines()] == ["533", "533"]
+    # data after the number: 5 byte device id (type 0xFA01 masked to 14 bits) + flags 0x0001
+    assert {line.split("\t")[1] for line in numbers.splitlines()} == {"3a010000010001"}
+
+
+def test_publish_frames_carry_burst_address_and_follow_configuration(burst_pcap):
+    path = str(burst_pcap)
+    rows = [line.split("\t") for line in tshark(
+        "-r", path, "-Y", "hart_ip.message_type == 2", "-T", "fields",
+        "-e", "hart_ip.pt.long_address").splitlines()]
+    assert len(rows) >= 3
+    # first address byte: bit 7 primary master, bit 6 burst frame
+    assert all(int(row[0][:2], 16) & 0xC0 == 0xC0 for row in rows)
+    order = tshark("-r", path, "-Y", "hart_ip.pt.command || hart_ip.message_type == 2",
+                   "-T", "fields", "-e", "hart_ip.message_type", "-e", "hart_ip.pt.command")
+    seq = [tuple(line.split("\t")) for line in order.splitlines()]
+    first_publish = seq.index(("2", "3"))
+    before = [cmd for kind, cmd in seq[:first_publish] if kind == "0"]
+    assert "108" in before and "103" in before
