@@ -200,7 +200,10 @@ class FaultSet:
     def _device_lock(self):
         return self._device.lock if self._device is not None else contextlib.nullcontext()
 
-    def clear(self, kind: str | None = None) -> None:
+    def clear(self, kind: str | None = None, reset: bool = False) -> None:
+        """Remove faults. ``reset=True`` also drops the drift offset already accumulated."""
+        if reset and kind not in (None, "drift"):
+            raise FaultError("reset applies to drift only")
         with self._device_lock(), self._lock:
             if kind is None:
                 kinds = list(self._active)
@@ -211,6 +214,8 @@ class FaultSet:
             for k in kinds:
                 if k == "drift":
                     self._remove_drift()
+                    if reset and self._device is not None:
+                        self._device.pv.reset_drift()
                 self._active.pop(k, None)
             if self._device is not None and not (
                     "sensor_failure" in self._active or "more_status" in self._active):

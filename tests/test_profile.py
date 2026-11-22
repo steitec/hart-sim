@@ -129,3 +129,16 @@ def test_non_utf8_profile_file_is_a_profile_error(tmp_path):
     path.write_bytes(b"tag: \xff\xfe\n")
     with pytest.raises(ProfileError, match="UTF-8"):
         load_profile(str(path))
+
+
+def test_loop_current_fixed():
+    assert load_profile("pressure", {"loop_current": "fixed"}).loop_current == "fixed"
+
+
+def test_loop_current_default_enabled():
+    assert load_profile("pressure").loop_current == "enabled"
+
+
+def test_loop_current_invalid():
+    with pytest.raises(ProfileError, match="loop_current"):
+        load_profile("pressure", {"loop_current": "off"})

@@ -98,8 +98,19 @@ def cmd36(dev, data, primary):
 
 @register(37, write=True)
 def cmd37(dev, data, primary):
-    code = _apply_range(dev, dev.urv, dev.pv.value())
-    return code, b""
+    # Lower range value := PV, URV moves along so the span stays; clipped at the upper
+    # sensor limit (code 14). not verified against the HART specification (public command tables)
+    pv = dev.pv.value()
+    lo, hi = dev.sensor_limits
+    if not math.isfinite(pv) or not lo <= pv <= hi:
+        return _apply_range(dev, dev.urv, pv), b""  # code 2 / 10 / 9 as before
+    new_urv = dev.urv + (pv - dev.lrv)
+    if new_urv > hi:
+        if hi - pv < dev.min_span:
+            return 9, b""  # PV too high: the clipped span would be below the minimum
+        code = _apply_range(dev, hi, pv)
+        return (14 if code == 0 else code), b""
+    return _apply_range(dev, new_urv, pv), b""
 
 
 # --- 40-42: fixed current, self test, reset ---------------------------------------------------

@@ -159,3 +159,8 @@ def test_overflowing_variable_encodes_as_nan_never_raises(dev):
     assert dev.handle(Frame(Address.long(*dev.unique_id), 1)).data[1:5] == nan
     dev.pv.override(400.0)
     assert dev.handle(Frame(Address.long(*dev.unique_id), 1)).data[1:5] != nan
+
+
+def test_profile_loop_current_fixed_gives_4ma_and_fixed_bit():
+    d = Device(load_profile("pressure", {"loop_current": "fixed"}), clock=Clock())
+    assert d.loop().current_ma == pytest.approx(4.0) and d.status_byte(True) & 0x08

@@ -57,12 +57,14 @@ class Profile:
     message: str = ""
     alarm: str = "high"
     sv: VariableSpec | None = None
+    loop_current: str = "enabled"  # "enabled" | "fixed" (multidrop, 4 mA)
 
 
 _TOP_KEYS = {
     "kind", "manufacturer_id", "device_type", "device_revision", "software_revision",
     "hardware_revision", "tag", "long_tag", "descriptor", "message", "pv", "sv",
     "sensor_limits", "range", "min_span", "damping", "alarm",
+    "loop_current",
 }
 _PV_KEYS = {"name", "unit", "source", "sensor_limits", "range", "damping"}
 _SV_KEYS = {"name", "unit", "source"}
@@ -204,6 +206,10 @@ def _build(raw: dict[str, Any]) -> Profile:
     if alarm not in ("high", "low"):
         raise ProfileError(f"alarm: must be 'high' or 'low', got {alarm!r}")
 
+    loop_current = raw.get("loop_current", "enabled")
+    if loop_current not in ("enabled", "fixed"):
+        raise ProfileError(f"loop_current: must be 'enabled' or 'fixed', got {loop_current!r}")
+
     pv = _variable(pv_raw, "pv", _PV_KEYS, "primary variable")
     sv = None
     if raw.get("sv") is not None:
@@ -227,6 +233,7 @@ def _build(raw: dict[str, Any]) -> Profile:
         damping=damping,
         alarm=alarm,
         sv=sv,
+        loop_current=loop_current,
     )
 
 

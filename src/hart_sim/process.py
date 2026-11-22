@@ -104,6 +104,14 @@ class Variable:
         self._drift_t = now
         self._drift_rate += raw_per_second
 
+    def reset_drift(self) -> None:
+        """Drop the drift rate and the accumulated drift offset."""
+        now = self._clock()
+        self._advance(now)
+        self._drift_rate = 0.0
+        self._drift_offset = 0.0
+        self._drift_t = now
+
     def rescale(self, scale: float, shift: float) -> None:
         """Convert to another engineering unit: value_new = scale * value + shift."""
         self._advance(self._clock())

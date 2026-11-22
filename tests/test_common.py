@@ -78,20 +78,47 @@ def test_span_too_small_warning(dev):
     assert dev.urv == 5
 
 
+def at_pv(dev, value):
+    dev.pv.override(value)
+    return dev
+
+
+def test_cmd37_keeps_span(dev):
+    at_pv(dev, 200.0)
+    assert send(dev, 37).response_code == 0
+    assert (dev.lrv, dev.urv) == pytest.approx((200.0, 1200.0))
+
+
+def test_cmd37_clips_urv_at_sensor_limit_with_code_14(dev):
+    at_pv(dev, 2000.0)
+    assert send(dev, 37).response_code == 14
+    assert (dev.lrv, dev.urv) == pytest.approx((2000.0, 2500.0))
+
+
+def test_cmd37_too_small_span_after_clip_is_refused(dev):
+    at_pv(dev, 2495.0)  # span would be 5 < min_span 10
+    assert send(dev, 37).response_code == 9
+    assert (dev.lrv, dev.urv) == (0.0, 1000.0)
+
+
+def test_cmd36_unchanged_keeps_lrv(dev):
+    at_pv(dev, 800.0)
+    assert send(dev, 36).response_code == 0
+    assert (dev.lrv, dev.urv) == pytest.approx((0.0, 800.0))
+
+
 def test_cmd36_37(dev):
     r = send(dev, 36)
     assert r.response_code == 0 and dev.urv == 400.0
     dev.pv.override(100.0)
     assert send(dev, 37).response_code == 0 and dev.lrv == 100.0
     dev.pv.override(5000.0)
-    assert send(dev, 36).response_code == 11 and dev.urv == 400.0
+    assert send(dev, 36).response_code == 11 and dev.urv == 500.0
     dev.pv.override(-500.0)
     assert send(dev, 37).response_code == 10
     dev.pv.override(float("nan"))
     assert send(dev, 37).response_code == 2
-    dev.pv.override(400.0)
-    assert send(dev, 37).response_code == 12  # LRV == URV
-    assert (dev.lrv, dev.urv) == (100.0, 400.0)
+    assert (dev.lrv, dev.urv) == (100.0, 500.0)
 
 
 def test_fixed_current_mode(dev):

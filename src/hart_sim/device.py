@@ -28,7 +28,7 @@ class Device:
         self.message = profile.message
         self.date: tuple[int, int, int] = (1, 1, 2026)
         self.final_assembly = 0
-        self.loop_current_mode = True  # True = enabled (not multidrop)
+        self.loop_current_mode = profile.loop_current == "enabled"  # True = enabled (not multidrop)
         self.lrv, self.urv = profile.range
         # Sensor limits and minimum span follow the PV unit (command 44).
         self.sensor_limits: tuple[float, float] = tuple(profile.sensor_limits)
