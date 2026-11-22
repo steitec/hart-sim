@@ -173,3 +173,50 @@ def test_dissector_decodes_host_type_for_both_masters(tmp_path):
     assert rows == ["1", "1", "0", "0"]  # request and echo, primary then secondary
     verbose = tshark("-r", str(path), "-V")
     assert "Primary Host" in verbose and "Secondary Host" in verbose
+
+
+@pytest.fixture(scope="module")
+def burst_pcap(tmp_path_factory):
+    """Session with a subscription (533), a burst of command 3 (3 Publishes), 105 and burst off.
+    UDP delivers one datagram per recv, so every Publish is its own packet in the log."""
+    with Bench.single("pressure") as bench:
+        client = RecordingClient("127.0.0.1", bench.server.port, timeout=2.0)
+        with client:
+            device = client.find("PT-101")
+            assert device.subscribe() == 1
+            device.burst(3, 0.1)
+            for _ in range(3):
+                client.wait_burst(3)
+            assert device.burst_config().command == 3
+            device.burst_off()
+    path = tmp_path_factory.mktemp("pcap") / "burst.pcap"
+    write_pcap(path, client.log)
+    return path
+
+
+def test_burst_session_has_no_malformed_or_expert_errors(burst_pcap):
+    verbose = tshark("-r", str(burst_pcap), "-V")
+    assert "Malformed" not in verbose
+    assert "Expert Info (Error" not in verbose
+    assert tshark("-r", str(burst_pcap), "-Y", "_ws.malformed").strip() == ""
+
+
+def test_dissector_decodes_publish_frames_as_command_3(burst_pcap):
+    path = str(burst_pcap)
+    types = tshark("-r", path, "-Y", "hart_ip", "-T", "fields", "-e", "hart_ip.message_type",
+                   "-e", "hart_ip.message_id").splitlines()
+    publishes = [row for row in types if row.startswith("2\t")]
+    assert len(publishes) >= 3 and all(row == "2\t3" for row in publishes)
+    assert "Publish" in tshark("-r", path, "-Y", "hart_ip.message_type == 2", "-V")
+    rows = [line.split("\t") for line in tshark(
+        "-r", path, "-Y", "hart_ip.message_type == 2", "-T", "fields",
+        "-e", "hart_ip.pt.command", "-e", "hart_ip.pt.response_code").splitlines()]
+    assert len(rows) >= 3 and all(row[0] == "3" and row[1] == "0" for row in rows)
+
+
+def test_dissector_decodes_subscription_and_burst_commands(burst_pcap):
+    commands = [row[0] for row in _rows(burst_pcap, "hart_ip.pt.command")]
+    # 533 goes out expanded (command byte 31 + two-byte number). tshark 4.4 shows the command
+    # byte only, not the expanded number, so assert 31 (request and response).
+    assert commands.count("31") == 2
+    assert {"105", "109", "108", "103", "104"} <= set(commands)
