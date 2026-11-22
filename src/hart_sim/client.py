@@ -242,8 +242,9 @@ class HartIPClient:
                 # number coincides with the request's.
                 self._queue_publish(header, payload)
                 continue
-            if header.sequence != seq:
-                continue  # stale or foreign reply
+            if header.msg_type not in (hartip.RESPONSE, hartip.ERROR, hartip.NAK) \
+                    or header.sequence != seq:
+                continue  # stale or foreign message
             return header, payload
 
     # --- burst ---
@@ -398,8 +399,9 @@ class DeviceHandle:
     def burst(self, command: int, period: float, *, max_period: float | None = None,
               variables: list[int] | None = None, message: int = 0, trigger: int = 0,
               level: float = 0.0) -> None:
-        """Configure burst `message` and switch it on: 108, 107 (if `variables`), 103,
-        104 (if `trigger`), 109. `max_period` defaults to 60 s (at least `period`). A trigger
+        """Configure burst `message` and switch it on: 108, 107 (if `variables`), 103, 104,
+        109. 104 is always sent, so `trigger` 0 (continuous) resets an earlier trigger mode.
+        `variables=None` keeps the device's current slots. `max_period` defaults to 60 s (at least `period`). A trigger
         needs the unit and classification of the message's first variable, which are read
         from the device (commands 3 and 8). Response code 8 (times adjusted) is accepted."""
         index = bytes([message])
@@ -415,7 +417,9 @@ class DeviceHandle:
         if trigger:
             first = variables[0] if variables else self.burst_config(message).slots[0]
             unit, klass = self._slot_unit_class(first)
-            self._ok(104, bytes([message, trigger, klass, unit]) + pack_float(level))
+        else:  # continuous: the device checks neither classification nor unit
+            unit, klass = _UNUSED_SLOT, 0
+        self._ok(104, bytes([message, trigger, klass, unit]) + pack_float(level))
         self._ok(109, bytes([1]) + index)
 
     def burst_off(self, message: int = 0) -> None:

@@ -1,10 +1,15 @@
+import socket
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
+from hart_sim import hartip
 from hart_sim.bench import Bench
-from hart_sim.frame import Address
-from hart_sim.client import DeviceHandle, HartError, HartIPClient, HartTimeout
+from hart_sim.frame import Address, Frame
+from hart_sim.client import (BurstConfig, DeviceHandle, HartError, HartIPClient, HartTimeout,
+                             Publish)
 
 PLANT = Path(__file__).parent.parent / "examples" / "plant.yaml"
 
@@ -109,15 +114,6 @@ def test_poll_max_address(bench):
 
 # --- burst: Publish handling and burst API ---------------------------------------------
 
-import socket
-import threading
-import time
-
-from hart_sim import hartip
-from hart_sim.client import BurstConfig, Publish
-from hart_sim.frame import Frame
-
-
 @pytest.fixture
 def single():
     with Bench.single("pressure") as b:
@@ -156,7 +152,21 @@ def test_response_matched_while_publish_arrives_first(single):
         assert all(p.frame.is_burst for p in client.publishes)
 
 
-def test_publish_with_coinciding_sequence_is_not_a_response():
+_FAKE_ADDR = Address.long(0xFA01, 1)
+
+
+def _burst_message(command, data, seq):
+    frame = Frame(Address.long(0xFA01, 1, burst=True), command, data, True, 0, 0, True).encode()
+    return hartip.encode_message(hartip.PUBLISH, hartip.PDU, seq, frame)
+
+
+def _reply_message(seq, msg_type=hartip.RESPONSE, data=b"\x07"):
+    frame = Frame(_FAKE_ADDR, 1, data, True, 0, 0).encode()
+    return hartip.encode_message(msg_type, hartip.PDU, seq, frame)
+
+
+def _fake_server(on_pdu):
+    """One-session HART-IP server; `on_pdu(header)` returns the messages to send for a PDU."""
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
@@ -177,38 +187,44 @@ def test_publish_with_coinciding_sequence_is_not_a_response():
                     conn.sendall(hartip.encode_message(hartip.RESPONSE, header.msg_id,
                                                        header.sequence, b"\x01\x00\x00\xea\x60"))
                 elif header.msg_id == hartip.PDU:
-                    burst = Frame(Address.long(0xFA01, 1, burst=True), 1, b"\x00\x00",
-                                  True, 0, 0, True).encode()
-                    # Publish first, with the very sequence number of the pending request.
-                    conn.sendall(hartip.encode_message(hartip.PUBLISH, hartip.PDU,
-                                                       header.sequence, burst))
-                    reply = Frame(Address.long(0xFA01, 1), 1, b"\x07", True, 0, 0).encode()
-                    conn.sendall(hartip.encode_message(hartip.RESPONSE, hartip.PDU,
-                                                       header.sequence, reply))
+                    for message in on_pdu(header):
+                        conn.sendall(message)
                 else:
                     return
 
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
+    threading.Thread(target=serve, daemon=True).start()
+    return srv
+
+
+def test_publish_with_coinciding_sequence_is_not_a_response():
+    srv = _fake_server(lambda h: [_burst_message(1, b"\x00\x00", h.sequence),
+                                  _reply_message(h.sequence)])
     with HartIPClient("127.0.0.1", srv.getsockname()[1], timeout=1.0) as client:
-        frame = client.command(Address.long(0xFA01, 1), 1)
+        frame = client.command(_FAKE_ADDR, 1)
         assert frame.data == b"\x07" and not frame.is_burst
         assert len(client.publishes) == 1 and client.publishes[0].frame.data == b"\x00\x00"
     srv.close()
 
 
-def test_wait_burst_filters_by_command(single):
-    with _burst_client(single) as client:
-        handle = client.handle(0)
-        handle.subscribe()
-        handle.burst(1, 0.1, message=0)
-        handle.burst(3, 0.1, message=1)
-        got = client.wait_burst(3, timeout=2.0)
-        assert got.frame.command == 3
-        assert any(p.frame.command == 1 for p in client.publishes) or \
-            client.wait_burst(1, timeout=2.0).frame.command == 1
-        handle.burst_off(0)
-        handle.burst_off(1)
+def test_request_typed_message_is_not_a_response():
+    srv = _fake_server(lambda h: [_reply_message(h.sequence, hartip.REQUEST, b"\x99"),
+                                  _reply_message(h.sequence)])
+    with HartIPClient("127.0.0.1", srv.getsockname()[1], timeout=1.0) as client:
+        assert client.command(_FAKE_ADDR, 1).data == b"\x07"
+    srv.close()
+
+
+def test_wait_burst_filters_by_command_and_keeps_the_rest():
+    srv = _fake_server(lambda h: [_burst_message(1, b"\x01", 0), _burst_message(3, b"\x03", 1),
+                                  _reply_message(h.sequence)])
+    with HartIPClient("127.0.0.1", srv.getsockname()[1], timeout=1.0) as client:
+        client.command(_FAKE_ADDR, 1)
+        assert [p.frame.command for p in client.publishes] == [1, 3]
+        assert client.wait_burst(3, timeout=1.0).frame.data == b"\x03"
+        assert [p.frame.command for p in client.publishes] == [1]
+        assert client.wait_burst(timeout=1.0).frame.command == 1
+        assert not client.publishes
+    srv.close()
 
 
 def test_wait_burst_timeout(single):
@@ -247,6 +263,17 @@ def test_burst_adjusted_period_is_accepted_and_bad_command_raises(single):
         assert handle.burst_config().period == pytest.approx(0.1)
         with pytest.raises(HartError, match="command 108.*2"):
             handle.burst(5, 1.0)
+        handle.burst_off()
+
+
+def test_burst_always_resets_the_trigger(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.burst(3, 0.5, trigger=2, level=1.5)
+        assert handle.burst_config().trigger_mode == 2
+        handle.burst(3, 1.0)
+        cfg = handle.burst_config()
+        assert cfg.trigger_mode == 0 and cfg.period == 1.0
         handle.burst_off()
 
 
