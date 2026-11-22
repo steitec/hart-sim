@@ -34,6 +34,7 @@ class Bench:
         self.server: Server | None = None
         self.control: ControlServer | None = None
         self.control_port = 0
+        self.publish_all = False  # bench key subscribe_all: Publish to every session
         self._clients: list = []
 
     # --- construction ---
@@ -61,10 +62,15 @@ class Bench:
     def from_dict(cls, d: dict, base: Path | None = None) -> "Bench":
         if not isinstance(d, dict) or not isinstance(d.get("devices"), list) or not d["devices"]:
             raise BenchError("a bench is a mapping with a non-empty 'devices' list")
-        unknown = set(d) - {"devices"}
+        unknown = set(d) - {"devices", "subscribe_all"}
         if unknown:
-            raise BenchError(f"unknown key {sorted(unknown)[0]!r} (allowed: devices)")
+            raise BenchError(f"unknown key {sorted(unknown)[0]!r} "
+                             "(allowed: devices, subscribe_all)")
+        publish_all = d.get("subscribe_all", False)
+        if not isinstance(publish_all, bool):
+            raise BenchError(f"subscribe_all must be true or false, got {publish_all!r}")
         bench = cls()
+        bench.publish_all = publish_all
         polling: dict[int, str] = {}
         ids: dict[tuple[int, int], str] = {}
         for index, entry in enumerate(d["devices"], 1):
@@ -117,7 +123,8 @@ class Bench:
         """
         if self.server is not None:
             raise BenchError("bench is already running")
-        server = Server(list(self.devices.values()), host=host, port=port)
+        server = Server(list(self.devices.values()), host=host, port=port,
+                        publish_all=self.publish_all)
         server.start()
         control = ControlServer(self, control_host, control_port)
         try:

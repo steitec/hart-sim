@@ -13,6 +13,7 @@ HEADER_SIZE = 8
 # message types
 REQUEST = 0
 RESPONSE = 1
+PUBLISH = 2  # source: hipserver hsqueues.cpp (HARTIP_MSG_TYPE_PUBLISH)
 ERROR = 3
 NAK = 15
 

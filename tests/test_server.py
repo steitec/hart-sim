@@ -56,8 +56,23 @@ class Tcp:
         self.sock.sendall(hartip.encode_message(hartip.REQUEST, msg_id, seq, body))
         return self.read()
 
-    def read(self):
-        header = hartip.decode_header(recv_exact(self.sock, 8))
+    def read(self, timeout=None):
+        """One message; socket.timeout if none starts within ``timeout`` seconds.
+
+        Without ``timeout`` the socket's own timeout applies (tests may set it).
+        """
+        if timeout is None:
+            header = hartip.decode_header(recv_exact(self.sock, 8))
+            return header, recv_exact(self.sock, header.byte_count - 8)
+        previous = self.sock.gettimeout()
+        self.sock.settimeout(timeout)
+        try:
+            first = self.sock.recv(1)  # only this wait is bounded by ``timeout``
+        finally:
+            self.sock.settimeout(previous)
+        if not first:
+            raise ConnectionError("closed")
+        header = hartip.decode_header(first + recv_exact(self.sock, 7))
         return header, recv_exact(self.sock, header.byte_count - 8)
 
     def close(self):
@@ -75,8 +90,14 @@ class Udp:
                          ("127.0.0.1", self.port))
         return self.read()
 
-    def read(self):
-        data, _ = self.sock.recvfrom(65535)
+    def read(self, timeout=None):
+        previous = self.sock.gettimeout()
+        if timeout is not None:
+            self.sock.settimeout(timeout)
+        try:
+            data, _ = self.sock.recvfrom(65535)
+        finally:
+            self.sock.settimeout(previous)
         header = hartip.decode_header(data)
         assert header.byte_count == len(data)
         return header, data[8:]

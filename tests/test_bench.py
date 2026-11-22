@@ -94,3 +94,16 @@ def test_bench_stop_stops_server_when_control_stop_fails(monkeypatch):
         bench.stop()
     real_control_stop()
     assert stopped == [True]
+
+
+def test_bench_subscribe_all_key():
+    bench = Bench.from_dict({"subscribe_all": True, "devices": [entry(polling_address=0)]})
+    assert bench.publish_all is True
+    with bench:
+        assert bench.server.publish_all is True
+    with Bench.from_dict({"devices": [entry()]}) as plain:
+        assert plain.server.publish_all is False
+    with pytest.raises(BenchError, match="subscribe_all must be true or false"):
+        Bench.from_dict({"subscribe_all": "yes", "devices": [entry()]})
+    with pytest.raises(BenchError, match="allowed: devices, subscribe_all"):
+        Bench.from_dict({"bogus": 1, "devices": [entry()]})
