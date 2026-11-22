@@ -8,7 +8,9 @@ One JSON object per line in, one per line out::
     {"device": "PT-101", "set": {"pv": 123.4}}   (null = back to the sources; "sv" likewise)
     {"list": true} -> {"ok": true, "devices": {"PT-101": {"tag": "PT-101", "faults": {...}, "pv": 400.0,
                                                           "current_ma": 10.4,
-                                                          "polling_address": 1}}}
+                                                          "polling_address": 1,
+                                                          "burst": [{"message": 0, "on": true,
+                                                                     "command": 3, "period": 1.0}]}}}
 
 Anything invalid gets ``{"ok": false, "error": "..."}``; the connection stays open.
 """
@@ -214,8 +216,11 @@ class ControlServer:
             current = device.loop().current_ma
             pv = device.pv.value()
             faults = device.faults.snapshot()
+            burst = [{"message": i, "on": True, "command": m.command, "period": m.period}
+                     for i, m in enumerate(device.burst) if m.on]
         return {"tag": device.tag, "faults": faults, "pv": _finite(pv),
-                "current_ma": _finite(current), "polling_address": device.polling_address}
+                "current_ma": _finite(current), "polling_address": device.polling_address,
+                "burst": burst}
 
 
 def send_control(request: dict, host: str = "127.0.0.1", port: int = 5095,

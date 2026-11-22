@@ -6,17 +6,19 @@ import json
 import signal
 import sys
 import threading
+import time
 from typing import Any
 
 from . import __version__, hartip, units
 from .bench import CONTROL_PORT, Bench, BenchError
-from .client import DeviceHandle, HartConnectionError, HartError, HartIPClient, HartTimeout
+from .client import DEVICE_STATUS, PROCESS_DATA, DeviceHandle, HartConnectionError, HartError, HartIPClient, HartTimeout
 from .control import send_control
 from .frame import unpack_ascii, unpack_float
 from .profile import ProfileError, bundled_profiles
 
 # Response codes 8 and 14 (span too small) are warnings: the command was carried out.
 _WARNING_CODES = (8, 14)
+_LISTEN_IDLE_LIMIT = 10.0  # `listen --count` gives up after this many seconds without a burst
 _KINDS = {0xFA01 & 0x3FFF: "pressure-transmitter", 0xFA02 & 0x3FFF: "temperature-transmitter"}
 
 
@@ -68,6 +70,9 @@ def _parser() -> argparse.ArgumentParser:
                             "the control port has no authentication)")
     serve.add_argument("--control-port", type=_port, default=CONTROL_PORT,
                        help=f"control port (default: {CONTROL_PORT}, 0 = any free port)")
+    serve.add_argument("--publish-all", action="store_true",
+                       help="send bursts to every HART-IP session, not only subscribed ones "
+                            "(like 'subscribe_all: true' in a bench file)")
 
     poll = commands.add_parser("poll", help="list the devices that answer on the server")
     poll.add_argument("--max-address", type=_polling_address, default=63, metavar="N",
@@ -82,6 +87,26 @@ def _parser() -> argparse.ArgumentParser:
     cmd.add_argument("hexdata", nargs="?", default="", help="request data as hex, e.g. 0102ff")
     client_args(cmd)
 
+    burst = commands.add_parser("burst", help="switch a device's burst mode on or off")
+    burst.add_argument("tag")
+    burst.add_argument("--command", type=int, metavar="N", dest="burst_command",
+                       help="command to burst: 1, 2, 3, 9, 33 or 48 (needed unless --off)")
+    burst.add_argument("--period", type=float, metavar="S",
+                       help="burst period in seconds, at least 0.1 (needed unless --off)")
+    burst.add_argument("--max-period", type=float, metavar="S", help="maximum period in seconds")
+    burst.add_argument("--message", type=int, default=0, metavar="K",
+                       help="burst message 0-2 (default: 0)")
+    burst.add_argument("--variables", metavar="0,1", help="device variable slots, comma separated")
+    burst.add_argument("--off", action="store_true", help="switch the burst message off")
+    client_args(burst)
+
+    listen = commands.add_parser("listen", help="print the bursts of a device")
+    listen.add_argument("tag")
+    listen.add_argument("--count", type=int, metavar="N", help="stop after N bursts (default: Ctrl-C)")
+    listen.add_argument("--status", action="store_true",
+                        help="also subscribe to device status bursts (command 48)")
+    client_args(listen)
+
     inject = commands.add_parser("inject", help="inject a fault into a running bench")
     inject.add_argument("tag")
     inject.add_argument("kind", help="e.g. sensor_failure, saturate, busy, drift, no_response, delay")
@@ -91,6 +116,8 @@ def _parser() -> argparse.ArgumentParser:
     clear = commands.add_parser("clear", help="clear one fault or all faults of a device")
     clear.add_argument("tag")
     clear.add_argument("kind", nargs="?", help="fault to clear (default: all)")
+    clear.add_argument("--reset", action="store_true",
+                       help="also zero the drift offset (only with drift or all faults)")
     control_args(clear)
 
     set_ = commands.add_parser("set", help="override the PV or SV of a device")
@@ -126,6 +153,7 @@ def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         bench = Bench.from_yaml(args.bench) if args.bench else Bench.single(args.profile)
     except (BenchError, ProfileError) as exc:
         return _error(str(exc))
+    bench.publish_all = bench.publish_all or args.publish_all
     try:
         bench.start(host=args.host, port=args.port, control_port=args.control_port,
                     control_host=args.control_host)
@@ -241,6 +269,122 @@ def _cmd(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         client.close()
 
 
+def _find_device(args: argparse.Namespace, client: HartIPClient) -> DeviceHandle | int:
+    """Handle of the device with the tag, or the exit code after printing the error."""
+    try:
+        return client.find(args.tag)
+    except LookupError as exc:
+        print(f"hart-sim: error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _identity(address: Any) -> tuple[int, int] | None:
+    """(device type, device ID) of a long address; the two expanded-type flag bits differ
+    between a burst frame (cleared) and the address learnt from command 11 (set)."""
+    if address.unique_id is None:
+        return None
+    return address.unique_id[0] & 0x3FFF, address.unique_id[1]
+
+
+def _burst(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    if not 0 <= args.message <= 255:
+        parser.error("--message must be 0-255")
+    variables = None
+    if args.variables is not None:
+        try:
+            variables = [int(v) for v in args.variables.split(",")]
+        except ValueError:
+            parser.error(f"--variables {args.variables!r} is not a comma separated list of numbers")
+        if not all(0 <= v <= 255 for v in variables):
+            parser.error("--variables: slot codes are 0-255")
+    if not args.off:
+        if args.burst_command is None or args.period is None:
+            parser.error("burst needs --command and --period (or --off)")
+        if args.period <= 0:
+            parser.error("--period must be greater than 0")
+    client = HartIPClient(args.host, args.port, transport="udp" if args.udp else "tcp")
+    try:
+        client.open()
+    except HartError as exc:
+        return _error(str(exc))
+    try:
+        try:
+            handle = _find_device(args, client)
+            if isinstance(handle, int):
+                return handle
+            if args.off:
+                handle.burst_off(args.message)
+                print(f"burst off: {args.tag} message {args.message}")
+            else:
+                handle.burst(args.burst_command, args.period, max_period=args.max_period,
+                             variables=variables, message=args.message)
+                print(f"burst on: {args.tag} message {args.message} command {args.burst_command} "
+                      f"every {args.period:g} s")
+        except HartTimeout:
+            print("hart-sim: error: device did not answer", file=sys.stderr)
+            return 1
+        except HartConnectionError as exc:
+            return _error(str(exc))
+        except HartError as exc:  # the device refused, e.g. "command 108: response code 7"
+            print(f"hart-sim: error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    finally:
+        client.close()
+
+
+def _listen(args: argparse.Namespace) -> int:
+    if args.count is not None and args.count < 1:
+        return _error("--count must be at least 1")
+    client = HartIPClient(args.host, args.port, transport="udp" if args.udp else "tcp")
+    try:
+        client.open()
+    except HartError as exc:
+        return _error(str(exc))
+    try:
+        try:
+            handle = _find_device(args, client)
+            if isinstance(handle, int):
+                return handle
+            handle.subscribe(PROCESS_DATA | (DEVICE_STATUS if args.status else 0))
+            seen = 0
+            idle_since = time.monotonic()
+            while args.count is None or seen < args.count:
+                try:
+                    publish = client.wait_burst(timeout=0.5)
+                except HartTimeout:
+                    if args.count is not None and time.monotonic() - idle_since > _LISTEN_IDLE_LIMIT:
+                        print(f"hart-sim: error: no burst from {args.tag} for "
+                              f"{_LISTEN_IDLE_LIMIT:g} s (is burst mode on? see: hart-sim burst)",
+                              file=sys.stderr)
+                        return 1
+                    continue
+                frame = publish.frame
+                if _identity(frame.address) != _identity(handle.address):
+                    continue  # another device, e.g. with serve --publish-all
+                idle_since = time.monotonic()
+                now = time.time()
+                stamp = time.strftime("%H:%M:%S", time.localtime(now)) + f".{int(now * 1000) % 1000:03d}"
+                text = _decode(frame.command, frame.data)
+                if text is None:
+                    text = f"data {frame.data.hex()}"
+                print(f"{stamp} {args.tag} cmd {frame.command} {text}", flush=True)
+                seen += 1
+        except KeyboardInterrupt:
+            return 0
+        except HartTimeout:
+            print("hart-sim: error: device did not answer", file=sys.stderr)
+            return 1
+        except HartConnectionError as exc:
+            return _error(str(exc))
+        except HartError as exc:
+            print(f"hart-sim: error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    finally:
+        client.close()
+
+
 def _poll(args: argparse.Namespace) -> int:
     client = HartIPClient(args.host, args.port, transport="udp" if args.udp else "tcp")
     try:
@@ -280,9 +424,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "serve":
         return _serve(parser, args)
-    if args.command in ("poll", "cmd"):
+    if args.command in ("poll", "cmd", "burst", "listen"):
         try:
-            return _poll(args) if args.command == "poll" else _cmd(parser, args)
+            if args.command == "poll":
+                return _poll(args)
+            if args.command == "cmd":
+                return _cmd(parser, args)
+            return _burst(parser, args) if args.command == "burst" else _listen(args)
         except OSError as exc:  # anything the client did not turn into a HartError
             return _error(getattr(exc, "strerror", None) or str(exc))
     if args.command == "profiles":
@@ -298,7 +446,10 @@ def main(argv: list[str] | None = None) -> int:
             params[key] = _value(value)
         return _control(args, {"device": args.tag, "inject": args.kind, "params": params})
     if args.command == "clear":
-        return _control(args, {"device": args.tag, "clear": args.kind or True})
+        request = {"device": args.tag, "clear": args.kind or True}
+        if args.reset:
+            request["reset"] = True
+        return _control(args, request)
     if args.value == "auto":
         value = None
     else:
