@@ -6,6 +6,8 @@ Lock order: the server's session lock is never held while calling into a Device
 
 from __future__ import annotations
 
+import heapq
+import itertools
 import logging
 import os
 import random
@@ -44,6 +46,9 @@ class Server:
         self._tcp: _TcpServer | None = None
         self._udp: socket.socket | None = None
         self._threads: list[threading.Thread] = []
+        self._send_cond = threading.Condition()  # guards _send_heap
+        self._send_heap: list[tuple[float, int, bytes, object]] = []
+        self._send_seq = itertools.count()
 
     @property
     def port(self) -> int:
@@ -62,7 +67,8 @@ class Server:
             tcp = udp = None
             try:
                 tcp = _TcpServer((self.host, port), _Handler, self)
-                udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                udp = socket.socket(tcp.address_family, socket.SOCK_DGRAM)
+                _dual_stack(udp, self.host)
                 udp.bind((self.host, tcp.server_address[1]))
                 break
             except OSError:
@@ -77,7 +83,8 @@ class Server:
         udp.settimeout(_POLL)
         # A short poll interval keeps stop() fast (shutdown waits for one interval).
         for target, name in ((lambda: tcp.serve_forever(poll_interval=0.05), "hart-sim-tcp"),
-                             (self._udp_loop, "hart-sim-udp")):
+                             (self._udp_loop, "hart-sim-udp"),
+                             (self._udp_send_loop, "hart-sim-udp-send")):
             thread = threading.Thread(target=target, name=name, daemon=True)
             thread.start()
             self._threads.append(thread)
@@ -86,6 +93,9 @@ class Server:
         if self._tcp is None:
             return
         self._stopping.set()
+        with self._send_cond:
+            self._send_heap.clear()  # unsent delayed replies are dropped
+            self._send_cond.notify_all()
         self._tcp.shutdown()
         self._tcp.server_close()
         self._tcp.close_connections()
@@ -108,21 +118,26 @@ class Server:
     # --- routing ---
 
     def route(self, frame: Frame) -> Frame | None:
-        return self._dispatch(frame, apply_faults=False)
+        response, _ = self._dispatch(frame, apply_faults=False)
+        return response
 
-    def _dispatch(self, frame: Frame, apply_faults: bool) -> Frame | None:
+    def _dispatch(self, frame: Frame, apply_faults: bool) -> tuple[Frame | None, float]:
+        """Route one frame. Returns (response or None, delay in seconds to wait first).
+
+        Faults only act on a request the device answers: ignored requests (foreign
+        address or tag) consume nothing.
+        """
         for dev in self.devices:
             if not dev.matches(frame.address, frame.command, frame.data):
                 continue
-            if apply_faults and dev.faults.take("no_response") is not None:
-                return None
             response = dev.handle(frame)
-            if response is not None and apply_faults:
-                delay = dev.faults.take("delay")
-                if delay is not None:
-                    self._stopping.wait(delay["seconds"])
-            return response
-        return None
+            if response is None or not apply_faults:
+                return response, 0.0
+            if dev.faults.take("no_response") is not None:
+                return None, 0.0
+            delay = dev.faults.take("delay")
+            return response, float(delay["seconds"]) if delay is not None else 0.0
+        return None, 0.0
 
     # --- sessions ---
 
@@ -140,8 +155,10 @@ class Server:
             self._sessions.pop(key, None)
             self._timeouts.pop(key, None)
 
-    def _handle_message(self, key, header: hartip.Header, body: bytes) -> tuple[bytes | None, bool]:
-        """Process one request. Returns (response or None, close_afterwards).
+    def _handle_message(self, key, header: hartip.Header, body: bytes) -> tuple[bytes | None, bool, float]:
+        """Process one request. Returns (response or None, close_afterwards, delay seconds).
+
+        The caller applies the delay (TCP: inline wait, UDP: scheduled send).
 
         close_afterwards: the TCP connection must be closed (UDP ignores it: the
         datagram is simply dropped or answered). True for malformed input, for
@@ -149,25 +166,25 @@ class Server:
         """
         if header.msg_type != hartip.REQUEST or header.msg_id not in (
                 hartip.SESSION_INITIATE, hartip.SESSION_CLOSE, hartip.KEEP_ALIVE, hartip.PDU):
-            return None, True
+            return None, True, 0.0
         seq = header.sequence
         now = time.monotonic()
         if header.msg_id == hartip.SESSION_INITIATE:
             if len(body) != 5:
-                return None, True
+                return None, True, 0.0
             if body[0] > 1:  # Host Type: 0 = secondary, 1 = primary master
                 return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body,
-                                             STATUS_INVALID_SELECTION), True
+                                             STATUS_INVALID_SELECTION), True, 0.0
             milliseconds = max(struct.unpack(">I", body[1:5])[0], MIN_INACTIVITY_MS)
             body = body[:1] + struct.pack(">I", milliseconds)
             with self._lock:
                 self._purge(now)
                 if key not in self._sessions and len(self._sessions) >= self.max_sessions:
                     return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body,
-                                                 STATUS_ALL_SESSIONS_IN_USE), True
+                                                 STATUS_ALL_SESSIONS_IN_USE), True, 0.0
                 self._sessions[key] = now + milliseconds / 1000.0
                 self._timeouts[key] = milliseconds / 1000.0
-            return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body), False
+            return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq, body), False, 0.0
         with self._lock:
             self._purge(now)
             active = key in self._sessions
@@ -175,22 +192,23 @@ class Server:
                 self._sessions[key] = now + self._timeouts[key]
         if not active:
             return hartip.encode_message(hartip.ERROR, header.msg_id, seq, b"",
-                                         STATUS_ACCESS_RESTRICTED), True
+                                         STATUS_ACCESS_RESTRICTED), True, 0.0
         if header.msg_id == hartip.KEEP_ALIVE:
-            return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq), False
+            return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq), False, 0.0
         if header.msg_id == hartip.SESSION_CLOSE:
             self._drop(key)
-            return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq), True
+            return hartip.encode_message(hartip.RESPONSE, header.msg_id, seq), True, 0.0
         if header.msg_id == hartip.PDU:
             try:
                 frame = Frame.decode(body)
             except FrameError:
-                return None, False
-            response = self._dispatch(frame, apply_faults=True)
+                return None, False, 0.0
+            response, delay = self._dispatch(frame, apply_faults=True)
             if response is None:
-                return None, False
-            return hartip.encode_message(hartip.RESPONSE, hartip.PDU, seq, response.encode()), False
-        return None, False
+                return None, False, 0.0
+            return (hartip.encode_message(hartip.RESPONSE, hartip.PDU, seq, response.encode()),
+                    False, delay)
+        return None, False, 0.0
 
     # --- UDP ---
 
@@ -212,13 +230,50 @@ class Server:
             if header.byte_count != len(data):
                 continue
             try:
-                reply, close = self._handle_message(("udp", addr), header, data[hartip.HEADER_SIZE:])
+                reply, _close, delay = self._handle_message(
+                    ("udp", addr), header, data[hartip.HEADER_SIZE:])
                 if reply is not None and not self._stopping.is_set():
-                    sock.sendto(reply, addr)
+                    if delay > 0:
+                        self._send_later(time.monotonic() + delay, reply, addr)
+                    else:
+                        sock.sendto(reply, addr)
             except OSError:
                 pass
             except Exception:  # never let one datagram kill the UDP thread
                 _log.debug("error handling UDP datagram from %s", addr, exc_info=True)
+
+    def _send_later(self, due: float, data: bytes, addr) -> None:
+        """Queue a UDP reply for the monotonic time `due` (one sender thread serves all)."""
+        with self._send_cond:
+            heapq.heappush(self._send_heap, (due, next(self._send_seq), data, addr))
+            self._send_cond.notify_all()
+
+    def _udp_send_loop(self) -> None:
+        while not self._stopping.is_set():
+            with self._send_cond:
+                if not self._send_heap:
+                    self._send_cond.wait(_POLL)
+                    continue
+                wait = self._send_heap[0][0] - time.monotonic()
+                if wait > 0:
+                    self._send_cond.wait(min(wait, _POLL))
+                    continue
+                _, _, data, addr = heapq.heappop(self._send_heap)
+            try:
+                self._udp.sendto(data, addr)
+            except OSError:
+                pass
+            except Exception:
+                _log.debug("error sending delayed UDP reply to %s", addr, exc_info=True)
+
+
+def _dual_stack(sock: socket.socket, host: str) -> None:
+    """Wildcard "::" also accepts IPv4 where the platform allows it."""
+    if host == "::" and hasattr(socket, "IPV6_V6ONLY"):
+        try:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except OSError:
+            pass
 
 
 class _TcpServer(socketserver.ThreadingTCPServer):
@@ -230,7 +285,13 @@ class _TcpServer(socketserver.ThreadingTCPServer):
         self._conn_lock = threading.Lock()
         self._conns: set[socket.socket] = set()
         self._handlers: list[threading.Thread] = []
+        self.address_family = socket.getaddrinfo(
+            address[0], address[1], type=socket.SOCK_STREAM)[0][0]
         super().__init__(address, handler)
+
+    def server_bind(self) -> None:
+        _dual_stack(self.socket, self.server_address[0])
+        super().server_bind()
 
     def process_request(self, request, client_address):
         thread = threading.Thread(target=self.process_request_thread,
@@ -311,8 +372,10 @@ class _Handler(socketserver.BaseRequestHandler):
                 idle = _READ_TIMEOUT
             header = hartip.decode_header(self._read(hartip.HEADER_SIZE, idle))
             body = self._read(header.byte_count - hartip.HEADER_SIZE, _READ_TIMEOUT)
-            reply, close = owner._handle_message(key, header, body)
+            reply, close, delay = owner._handle_message(key, header, body)
             if reply is not None:
+                if delay > 0 and owner._stopping.wait(delay):
+                    return
                 self.request.settimeout(_READ_TIMEOUT)
                 self.request.sendall(reply)
             if close:

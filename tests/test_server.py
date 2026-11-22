@@ -1,3 +1,5 @@
+import os
+import threading
 import socket
 import struct
 import time
@@ -468,3 +470,119 @@ def test_fixed_port_does_not_retry(monkeypatch):
     with pytest.raises(PermissionError):
         Server([], port=port).start()
     assert requested == [port]
+
+
+def _has_ipv6_loopback():
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+ipv6 = pytest.mark.skipif(not _has_ipv6_loopback(), reason="no ::1 on this runner")
+
+
+@ipv6
+@pytest.mark.parametrize("transport", ["tcp", "udp"])
+def test_ipv6_loopback(transport):
+    from hart_sim.client import HartIPClient
+    srv = start([make_device()], host="::1")
+    try:
+        with HartIPClient("::1", srv.port, transport=transport, timeout=2.0) as c:
+            assert c.handle(0).read_variables().pv_unit == 12
+    finally:
+        srv.stop()
+
+
+@ipv6
+def test_dual_stack_wildcard():
+    from hart_sim.client import HartIPClient
+    srv = start([make_device()], host="::")
+    try:
+        with HartIPClient("::1", srv.port, timeout=2.0) as c:
+            assert c.handle(0).read_variables().pv_unit == 12
+        try:
+            with HartIPClient("127.0.0.1", srv.port, timeout=2.0) as c:
+                assert c.handle(0).read_variables().pv_unit == 12
+        except Exception:
+            if hasattr(socket, "IPV6_V6ONLY") and os.name != "nt":
+                raise  # dual stack expected where the option exists (Windows/BSD defaults vary)
+    finally:
+        srv.stop()
+
+
+def test_udp_delay_does_not_block_other_clients():
+    dev_a, dev_b = make_device(0, 1), make_device(1, 2)
+    srv = start([dev_a, dev_b])
+    try:
+        a, b = Udp(srv.port), Udp(srv.port)
+        open_session(a)
+        open_session(b)
+        dev_a.faults.inject("delay", seconds=1.5)
+        t0 = time.monotonic()
+        a.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0(0)),
+                      ("127.0.0.1", srv.port))
+        b.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0(1)),
+                      ("127.0.0.1", srv.port))
+        b.sock.settimeout(TIMEOUT)
+        header, _ = b.read()
+        t_b = time.monotonic() - t0
+        assert header.msg_type == hartip.RESPONSE
+        a.sock.settimeout(TIMEOUT)
+        header, _ = a.read()
+        t_a = time.monotonic() - t0
+        assert header.msg_type == hartip.RESPONSE
+        assert t_b < 0.5
+        assert t_a >= 1.4
+        a.close()
+        b.close()
+    finally:
+        srv.stop()
+
+
+def test_stop_drops_pending_delayed_replies():
+    dev = make_device()
+    srv = start([dev])
+    udp = Udp(srv.port)
+    open_session(udp)
+    dev.faults.inject("delay", seconds=30)
+    udp.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0()),
+                    ("127.0.0.1", srv.port))
+    time.sleep(0.1)  # let the datagram be queued (no sync point exists for this)
+    t0 = time.monotonic()
+    srv.stop()
+    assert time.monotonic() - t0 < 5
+    assert not any(t.name == "hart-sim-udp-send" and t.is_alive() for t in threading.enumerate())
+    udp.close()
+
+
+def test_no_response_not_consumed_by_ignored_request(server):
+    dev = server.devices[0]
+    udp = Udp(server.port)
+    open_session(udp)
+    dev.faults.inject("no_response", count=1)
+    # an address no device has: ignored, the fault stays
+    udp.sock.settimeout(0.3)
+    udp.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0(5)),
+                    ("127.0.0.1", server.port))
+    with pytest.raises(socket.timeout):
+        udp.read()
+    assert dev.faults.active("no_response") is not None
+    # cmd 11 with a foreign tag: the device returns None, the fault stays
+    frame = Frame(Address.short(0), 11, data=b"\xff" * 6).encode()
+    udp.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 3, frame),
+                    ("127.0.0.1", server.port))
+    with pytest.raises(socket.timeout):
+        udp.read()
+    assert dev.faults.active("no_response") is not None
+    # the next real request is silenced, the one after is answered
+    udp.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 4, cmd0()),
+                    ("127.0.0.1", server.port))
+    with pytest.raises(socket.timeout):
+        udp.read()
+    assert dev.faults.active("no_response") is None
+    udp.sock.settimeout(TIMEOUT)
+    assert udp.request(hartip.PDU, 5, cmd0())[0].msg_type == hartip.RESPONSE
+    udp.close()

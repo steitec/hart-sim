@@ -79,11 +79,15 @@ class HartIPClient:
             except OSError as exc:
                 raise HartConnectionError(f"cannot connect to {self.host}:{self.port}: {exc}") from exc
         else:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock = None
             try:
-                sock.connect((self.host, self.port))
+                family, _, _, _, addr = socket.getaddrinfo(
+                    self.host, self.port, type=socket.SOCK_DGRAM)[0]
+                sock = socket.socket(family, socket.SOCK_DGRAM)
+                sock.connect(addr)
             except OSError as exc:  # e.g. socket.gaierror for an unknown host name
-                sock.close()
+                if sock is not None:
+                    sock.close()
                 raise HartConnectionError(f"cannot reach {self.host}:{self.port}: {exc}") from exc
             self._sock = sock
         try:

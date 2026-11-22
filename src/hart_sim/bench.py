@@ -150,8 +150,9 @@ class Bench:
         from .client import HartIPClient
         if self.server is None:
             raise BenchError("bench is not running")
-        client = HartIPClient("127.0.0.1" if self.server.host in ("0.0.0.0", "") else self.server.host,
-                              self.server.port, **kwargs)
+        host = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}.get(
+            self.server.host, self.server.host)
+        client = HartIPClient(host, self.server.port, **kwargs)
         client.open()
         self._clients.append(client)
         return client
