@@ -11,6 +11,13 @@ _STX_SHORT = 0x02
 _STX_LONG = 0x82
 _ACK_SHORT = 0x06
 _ACK_LONG = 0x86
+_BACK_SHORT = 0x01
+_BACK_LONG = 0x81
+
+# Expanded commands: command byte 31 carries a 16-bit command number. In requests it is the
+# first two data bytes, in responses/bursts it follows the status bytes. Source: hipserver
+# tppdu.cpp (IsExpCmd, 16-bit command after RC/status in responses).
+EXPANDED = 31
 
 
 class FrameError(ValueError):
@@ -136,19 +143,31 @@ class Frame:
     is_response: bool = False
     response_code: int = 0
     device_status: int = 0
+    is_burst: bool = False
 
     def encode(self) -> bytes:
         """Encode without preambles."""
         long = self.address.is_long
+        if not 0 <= self.command <= 0xFFFF:
+            raise ValueError("command number must fit in 16 bits")
+        if self.command > 255:
+            cmd_byte = EXPANDED
+            data = self.command.to_bytes(2, "big") + self.data
+        else:
+            cmd_byte = self.command
+            data = self.data
         if self.is_response:
-            delimiter = _ACK_LONG if long else _ACK_SHORT
-            body = bytes([self.response_code, self.device_status]) + self.data
+            if self.is_burst:
+                delimiter = _BACK_LONG if long else _BACK_SHORT
+            else:
+                delimiter = _ACK_LONG if long else _ACK_SHORT
+            body = bytes([self.response_code, self.device_status]) + data
         else:
             delimiter = _STX_LONG if long else _STX_SHORT
-            body = self.data
+            body = data
         if len(body) > 255:
             raise ValueError("frame body too long")
-        raw = bytes([delimiter]) + self.address.encode() + bytes([self.command, len(body)]) + body
+        raw = bytes([delimiter]) + self.address.encode() + bytes([cmd_byte, len(body)]) + body
         return raw + bytes([checksum(raw)])
 
     @classmethod
@@ -156,10 +175,11 @@ class Frame:
         if len(raw) < 1:
             raise FrameError("empty frame")
         delimiter = raw[0]
-        if delimiter not in (_STX_SHORT, _STX_LONG, _ACK_SHORT, _ACK_LONG):
+        if delimiter not in (_STX_SHORT, _STX_LONG, _ACK_SHORT, _ACK_LONG, _BACK_SHORT, _BACK_LONG):
             raise FrameError(f"bad delimiter 0x{delimiter:02x}")
         long = bool(delimiter & 0x80)
-        is_response = bool(delimiter & 0x04)
+        is_burst = delimiter in (_BACK_SHORT, _BACK_LONG)
+        is_response = is_burst or bool(delimiter & 0x04)
         addr_len = 5 if long else 1
         header_len = 1 + addr_len + 2
         if len(raw) < header_len + 1:
@@ -179,8 +199,18 @@ class Frame:
             address = Address(a[0] & 0x3F, None, primary, burst)
         command = raw[header_len - 2]
         body = raw[header_len : header_len + byte_count]
+        status = 0
+        code = 0
         if is_response:
             if byte_count < 2:
                 raise FrameError("response too short for status bytes")
-            return cls(address, command, bytes(body[2:]), True, body[0], body[1])
+            code, status = body[0], body[1]
+            body = body[2:]
+        if command == EXPANDED:
+            if len(body) < 2:
+                raise FrameError("expanded command without 16-bit command number")
+            command = int.from_bytes(body[:2], "big")
+            body = body[2:]
+        if is_response:
+            return cls(address, command, bytes(body), True, code, status, is_burst)
         return cls(address, command, bytes(body))
