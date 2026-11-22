@@ -135,7 +135,7 @@ def test_burst_end_to_end_tcp_and_udp(single, transport):
         second = client.wait_burst(3, timeout=2.0)
         handle.burst_off()
     assert isinstance(first, Publish) and first.frame.is_burst and first.frame.command == 3
-    assert 0.05 <= second.received - first.received <= 0.5
+    assert second.received >= first.received  # parse times: two Publishes can share a recv
 
 
 def test_response_matched_while_publish_arrives_first(single):
@@ -307,3 +307,38 @@ def test_subscribe_conflict_raises(single):
         assert client.subscribe(handle.address) == 1  # all devices
         with pytest.raises(HartError, match="533.*9"):
             handle.subscribe()  # individual next to a broadcast subscription
+
+
+@pytest.mark.parametrize("transport", ["tcp", "udp"])
+def test_wait_burst_keeps_the_session_alive(single, transport):
+    # 1000 ms is the server's minimum; a listener sends nothing but Keep Alive.
+    with _burst_client(single, transport=transport, inactivity_ms=1000) as client:
+        handle = client.handle(0)
+        handle.subscribe()
+        handle.burst(1, 0.1)
+        key = next(iter(single.server._subs))
+        deadline = time.monotonic() + 3.5
+        received = 0
+        while time.monotonic() < deadline:
+            client.wait_burst(1, timeout=1.0)
+            received += 1
+        assert received >= 10
+        assert single.server.subscriptions(key)
+        handle.burst_off()
+
+
+def test_burst_argument_validation(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        for kwargs in ({"command": 1, "period": float("nan")},
+                       {"command": 1, "period": float("inf")},
+                       {"command": 1, "period": -1.0},
+                       {"command": 1, "period": 0.0},
+                       {"command": 1, "period": 1.0, "max_period": float("nan")},
+                       {"command": 1, "period": 1.0, "max_period": -5.0},
+                       {"command": 70000, "period": 1.0},
+                       {"command": -1, "period": 1.0},
+                       {"command": 1, "period": 1.0, "message": 256}):
+            with pytest.raises(ValueError):
+                handle.burst(**kwargs)
+        assert not next(iter(single.devices.values())).burst_on  # nothing was sent

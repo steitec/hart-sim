@@ -320,6 +320,8 @@ def _burst(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                              variables=variables, message=args.message)
                 print(f"burst on: {args.tag} message {args.message} command {args.burst_command} "
                       f"every {args.period:g} s")
+        except ValueError as exc:
+            parser.error(str(exc))
         except HartTimeout:
             print("hart-sim: error: device did not answer", file=sys.stderr)
             return 1

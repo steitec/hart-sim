@@ -3,6 +3,7 @@ as an independent tool against real gateways."""
 from __future__ import annotations
 
 import collections
+import math
 import socket
 import struct
 import time
@@ -74,7 +75,7 @@ class Variables:
 class Publish:
     """A burst frame received in a HART-IP Publish message."""
     frame: Frame
-    received: float  # time.monotonic() when it was read
+    received: float  # time.monotonic() when the client parsed it (not when it was sent)
 
 
 @dataclass(frozen=True)
@@ -93,11 +94,15 @@ class BurstConfig:
 
 class HartIPClient:
     def __init__(self, host: str = "127.0.0.1", port: int = hartip.PORT,
-                 transport: str = "tcp", timeout: float = 2.0, primary: bool = True) -> None:
+                 transport: str = "tcp", timeout: float = 2.0, primary: bool = True,
+                 inactivity_ms: int = _DEFAULT_INACTIVITY_MS) -> None:
         if transport not in ("tcp", "udp"):
             raise ValueError("transport must be 'tcp' or 'udp'")
         self.host, self.port, self.transport = host, port, transport
         self.timeout, self.primary = timeout, primary
+        self.inactivity_ms = inactivity_ms  # requested; the server may raise it
+        self._inactivity_s = inactivity_ms / 1000.0  # negotiated (Session Initiate response)
+        self._last_sent = time.monotonic()  # when the last request went out
         self._sock: socket.socket | None = None
         self._seq = 0
         self._rx = bytearray()  # TCP bytes read but not yet part of a complete message
@@ -126,10 +131,12 @@ class HartIPClient:
                 raise HartConnectionError(f"cannot reach {self.host}:{self.port}: {exc}") from exc
             self._sock = sock
         try:
-            body = bytes([1 if self.primary else 0]) + struct.pack(">I", _DEFAULT_INACTIVITY_MS)
-            header, _ = self._exchange(hartip.SESSION_INITIATE, body, self.timeout)
+            body = bytes([1 if self.primary else 0]) + struct.pack(">I", self.inactivity_ms)
+            header, reply = self._exchange(hartip.SESSION_INITIATE, body, self.timeout)
             if header.status != 0 or header.msg_type != hartip.RESPONSE:
                 raise HartError(f"session initiate failed, HART-IP status {header.status}")
+            if len(reply) >= 5:  # host type + inactivity close time the server accepted
+                self._inactivity_s = struct.unpack(">I", reply[1:5])[0] / 1000.0
         except BaseException:
             self._close_socket()
             raise
@@ -230,6 +237,7 @@ class HartIPClient:
         seq = self._seq
         message = hartip.encode_message(hartip.REQUEST, msg_id, seq, body)
         deadline = time.monotonic() + timeout
+        self._last_sent = time.monotonic()
         try:
             self._sock.sendall(message)
         except OSError as exc:
@@ -251,14 +259,24 @@ class HartIPClient:
 
     def wait_burst(self, command: int | None = None, timeout: float | None = None) -> Publish:
         """Oldest queued Publish of `command` (any command if None), else wait for one.
-        Publishes of other commands stay queued. Raises HartTimeout."""
+        Publishes of other commands stay queued. Raises HartTimeout.
+
+        While waiting, a Keep Alive goes out whenever no request was sent for half the
+        negotiated inactivity time, so a listening session is not closed by the server."""
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         while True:
             for item in self.publishes:
                 if command is None or item.frame.command == command:
                     self.publishes.remove(item)
                     return item
-            header, payload = self._read_message(deadline)
+            keep_alive_at = self._last_sent + self._inactivity_s / 2
+            try:
+                header, payload = self._read_message(min(deadline, keep_alive_at))
+            except HartTimeout:
+                if time.monotonic() >= deadline:
+                    raise
+                self._exchange(hartip.KEEP_ALIVE, b"", self.timeout)  # queues Publishes met
+                continue
             if header.msg_type == hartip.PUBLISH:
                 self._queue_publish(header, payload)
 
@@ -404,6 +422,14 @@ class DeviceHandle:
         `variables=None` keeps the device's current slots. `max_period` defaults to 60 s (at least `period`). A trigger
         needs the unit and classification of the message's first variable, which are read
         from the device (commands 3 and 8). Response code 8 (times adjusted) is accepted."""
+        if not (math.isfinite(period) and period > 0):
+            raise ValueError("period must be a finite number greater than 0")
+        if max_period is not None and not (math.isfinite(max_period) and max_period > 0):
+            raise ValueError("max_period must be a finite number greater than 0")
+        if not 0 <= command <= 65535:
+            raise ValueError("command must be 0-65535")
+        if not 0 <= message <= 255:
+            raise ValueError("message must be 0-255")
         index = bytes([message])
         self._ok(108, command.to_bytes(2, "big") + index)
         if variables is not None:

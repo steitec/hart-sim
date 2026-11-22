@@ -14,7 +14,9 @@ All notable changes to this project are documented here. The format follows
   profiles
 - HART-IP client subscriptions (commands 532 and 533) and Publish messages; the bench key
   `subscribe_all` and `hart-sim serve --publish-all` send bursts to every session
-- Client: `wait_burst()`, `DeviceHandle.subscribe()`, `burst()`, `burst_off()`, `burst_config()`
+- Client: `wait_burst()`, `DeviceHandle.subscribe()`, `burst()`, `burst_off()`, `burst_config()`;
+  `wait_burst()` sends Keep Alive at half the negotiated inactivity time (new `inactivity_ms`
+  parameter, default 60000), so a listening session and its subscription do not expire
 - CLI: `hart-sim burst` and `hart-sim listen`; `hart-sim clear --reset` (and `"reset": true` in
   the control channel) zeroes the drift offset
 - Fault `burst_stop`; `list` shows the running burst messages

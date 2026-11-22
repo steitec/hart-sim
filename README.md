@@ -168,7 +168,8 @@ devices:
 Duplicate tags, polling addresses or device IDs are rejected with the offending
 entry named. The optional top-level key `subscribe_all: true` sends bursts to
 every HART-IP session, with or without a subscription (`hart-sim serve
---publish-all` does the same for any bench).
+--publish-all` does the same for any bench). Clients that match answers by
+sequence number only (not by message type) may take such a Publish for a response.
 
 ## Supported commands
 
@@ -330,12 +331,13 @@ burst off: PT-101 message 0
 ```
 
 `burst` takes `--command` and `--period` (both needed unless `--off`),
-`--max-period`, `--message K` (0-2, default 0) and `--variables 0,1` (slot
+`--max-period`, `--message K` (message number 0-2, default 0) and `--variables 0,1` (slot
 codes, comma separated; without it the message keeps its slots). `listen`
 subscribes, prints the decoded bursts (commands 1, 2, 3 and 48; other commands
 as hex) with a local time stamp, `--status` adds the device status bursts
-(command 48), and `--count N` stops after N bursts; it exits with 1 if no
-burst arrives for 10 s. Without `--count`, Ctrl-C ends it. A bench started with
+(command 48), and `--count N` stops after N bursts; with `--count` it exits with
+1 if no burst arrives for 10 s. Without `--count` it waits until Ctrl-C. While
+waiting, the client keeps the session alive with Keep Alive messages. A bench started with
 `serve --publish-all` sends the bursts of all devices to every session;
 `listen` prints only those of the tag you named.
 

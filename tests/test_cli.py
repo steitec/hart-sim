@@ -336,6 +336,32 @@ def test_clear_drift_reset_cli(bench, capsys):
     assert dev.faults.active("drift") is None
     code, _, err = run(capsys, "clear", "PT-101", "--reset", *ctl(bench))
     assert code == 0, err
+    assert dev.pv._drift_offset == 0.0
+
+
+def test_clear_reset_drops_offset_of_drift_cleared_before(bench, capsys):
+    dev = bench.devices["PT-101"]
+    run(capsys, "inject", "PT-101", "drift", "per_second=50", *ctl(bench))
+    deadline = time.monotonic() + 5.0
+    while dev.pv._drift_at(dev.pv._clock()) == 0.0 and time.monotonic() < deadline:
+        pass  # the drift offset grows with the device clock
+    code, _, err = run(capsys, "clear", "PT-101", "drift", *ctl(bench))  # offset stays
+    assert code == 0, err
+    assert dev.pv._drift_at(dev.pv._clock()) != 0.0
+    code, _, err = run(capsys, "clear", "PT-101", "--reset", *ctl(bench))
+    assert code == 0, err
+    assert dev.pv._drift_at(dev.pv._clock()) == 0.0
+
+
+@pytest.mark.parametrize("args", [
+    ("--period", "nan"), ("--period", "inf"), ("--period", "-1"),
+    ("--period", "1", "--max-period", "nan"), ("--period", "1", "--command", "70000")])
+def test_burst_invalid_values_exit_2(bench, capsys, args):
+    argv = ["burst", "PT-101", "--command", "3", *args, *conn(bench)]
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2
+    assert "Traceback" not in capsys.readouterr().err
 
 
 def test_clear_reset_request_shape(monkeypatch, capsys):

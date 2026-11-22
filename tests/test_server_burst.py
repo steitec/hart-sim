@@ -23,11 +23,11 @@ ALL = bytes(5)
 class Session:
     """A HART-IP client that keeps Publish messages apart from responses."""
 
-    def __init__(self, client):
+    def __init__(self, client, inactivity_ms=30000):
         self.c = client
         self.seq = 1
         self.publishes = []  # (header, body)
-        open_session(client)
+        open_session(client, inactivity_ms)
 
     def send(self, msg_id, seq, body=b""):
         raw = hartip.encode_message(hartip.REQUEST, msg_id, seq, body)
@@ -340,3 +340,29 @@ def test_no_response_and_delay_do_not_touch_bursts():
     finally:
         srv.stop()
 
+
+
+def test_silent_subscribed_session_expires_while_another_keeps_receiving():
+    dev = make_device()
+    srv = start([dev])
+    try:
+        silent = Session(Tcp(srv.port), inactivity_ms=1000)
+        live = Session(Udp(srv.port), inactivity_ms=1000)
+        assert silent.subscribe(dev).response_code == 0
+        assert live.subscribe(dev).response_code == 0
+        burst_on(live, dev)
+        silent_key = next(k for k in srv._sessions if k[0] != "udp")
+        live_key = udp_key(live.c)
+        assert srv.subscriptions(silent_key) == {None: PROCESS_DATA}
+        deadline = time.monotonic() + 5.0
+        received = 0
+        while srv.subscriptions(silent_key) and time.monotonic() < deadline:
+            received += len(live.collect(0.2))
+            live.call(hartip.KEEP_ALIVE)  # only the live session keeps itself open
+        assert srv.subscriptions(silent_key) == {}
+        assert received >= 3
+        assert srv.subscriptions(live_key) == {None: PROCESS_DATA}
+        live.c.close()
+        silent.c.close()
+    finally:
+        srv.stop()

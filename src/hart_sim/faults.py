@@ -217,9 +217,9 @@ class FaultSet:
             for k in kinds:
                 if k == "drift":
                     self._remove_drift()
-                    if reset and self._device is not None:
-                        self._device.pv.reset_drift()
                 self._active.pop(k, None)
+            if reset and self._device is not None and kind in (None, "drift"):
+                self._device.pv.reset_drift()  # also when the drift was cleared before
             if self._device is not None and not (
                     "sensor_failure" in self._active or "more_status" in self._active):
                 self._device.more_status_pending = False

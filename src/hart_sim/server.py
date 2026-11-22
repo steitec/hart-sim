@@ -410,7 +410,14 @@ class Server:
                         raise OSError("no connection")
                     lock, sock = sender
                     with lock:
-                        sock.sendall(data)
+                        try:
+                            sock.sendall(data)
+                        except OSError:
+                            try:  # a half-sent Publish must not leave a live, out-of-step stream
+                                sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            raise
             except OSError:
                 failed.add(key)
         for key in failed:
