@@ -81,8 +81,7 @@ class HartIPClient:
         else:
             sock = None
             try:
-                family, _, _, _, addr = socket.getaddrinfo(
-                    self.host, self.port, type=socket.SOCK_DGRAM)[0]
+                family, addr = hartip.resolve(self.host, self.port, socket.SOCK_DGRAM)
                 sock = socket.socket(family, socket.SOCK_DGRAM)
                 sock.connect(addr)
             except OSError as exc:  # e.g. socket.gaierror for an unknown host name

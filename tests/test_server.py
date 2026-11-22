@@ -8,6 +8,7 @@ import pytest
 
 from hart_sim import hartip
 from hart_sim import server as server_module
+from hart_sim.client import HartConnectionError, HartIPClient, HartTimeout
 from hart_sim.device import Device
 from hart_sim.frame import Address, Frame
 from hart_sim.profile import load_profile
@@ -487,7 +488,6 @@ ipv6 = pytest.mark.skipif(not _has_ipv6_loopback(), reason="no ::1 on this runne
 @ipv6
 @pytest.mark.parametrize("transport", ["tcp", "udp"])
 def test_ipv6_loopback(transport):
-    from hart_sim.client import HartIPClient
     srv = start([make_device()], host="::1")
     try:
         with HartIPClient("::1", srv.port, transport=transport, timeout=2.0) as c:
@@ -498,7 +498,6 @@ def test_ipv6_loopback(transport):
 
 @ipv6
 def test_dual_stack_wildcard():
-    from hart_sim.client import HartIPClient
     srv = start([make_device()], host="::")
     try:
         with HartIPClient("::1", srv.port, timeout=2.0) as c:
@@ -506,7 +505,7 @@ def test_dual_stack_wildcard():
         try:
             with HartIPClient("127.0.0.1", srv.port, timeout=2.0) as c:
                 assert c.handle(0).read_variables().pv_unit == 12
-        except Exception:
+        except (OSError, HartConnectionError, HartTimeout):
             if hasattr(socket, "IPV6_V6ONLY") and os.name != "nt":
                 raise  # dual stack expected where the option exists (Windows/BSD defaults vary)
     finally:
@@ -516,8 +515,8 @@ def test_dual_stack_wildcard():
 def test_udp_delay_does_not_block_other_clients():
     dev_a, dev_b = make_device(0, 1), make_device(1, 2)
     srv = start([dev_a, dev_b])
+    a, b = Udp(srv.port), Udp(srv.port)
     try:
-        a, b = Udp(srv.port), Udp(srv.port)
         open_session(a)
         open_session(b)
         dev_a.faults.inject("delay", seconds=1.5)
@@ -526,19 +525,17 @@ def test_udp_delay_does_not_block_other_clients():
                       ("127.0.0.1", srv.port))
         b.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0(1)),
                       ("127.0.0.1", srv.port))
-        b.sock.settimeout(TIMEOUT)
         header, _ = b.read()
         t_b = time.monotonic() - t0
         assert header.msg_type == hartip.RESPONSE
-        a.sock.settimeout(TIMEOUT)
         header, _ = a.read()
         t_a = time.monotonic() - t0
         assert header.msg_type == hartip.RESPONSE
         assert t_b < 0.5
         assert t_a >= 1.4
+    finally:
         a.close()
         b.close()
-    finally:
         srv.stop()
 
 
@@ -546,16 +543,44 @@ def test_stop_drops_pending_delayed_replies():
     dev = make_device()
     srv = start([dev])
     udp = Udp(srv.port)
-    open_session(udp)
-    dev.faults.inject("delay", seconds=30)
-    udp.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0()),
-                    ("127.0.0.1", srv.port))
-    time.sleep(0.1)  # let the datagram be queued (no sync point exists for this)
-    t0 = time.monotonic()
-    srv.stop()
-    assert time.monotonic() - t0 < 5
-    assert not any(t.name == "hart-sim-udp-send" and t.is_alive() for t in threading.enumerate())
-    udp.close()
+    try:
+        open_session(udp)
+        dev.faults.inject("delay", seconds=30)
+        udp.sock.sendto(hartip.encode_message(hartip.REQUEST, hartip.PDU, 2, cmd0()),
+                        ("127.0.0.1", srv.port))
+        deadline = time.monotonic() + TIMEOUT
+        while not srv._send_heap and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert srv._send_heap
+        threads = list(srv._threads)
+        t0 = time.monotonic()
+        srv.stop()
+        assert time.monotonic() - t0 < 5
+        assert not any(t.is_alive() for t in threads)
+        assert not srv._send_heap
+        udp.sock.settimeout(0.3)
+        with pytest.raises(socket.timeout):
+            udp.read()
+    finally:
+        udp.close()
+        srv.stop()
+
+
+@pytest.mark.parametrize("host", ["", "localhost"])
+def test_ipv4_hosts_of_0_1_still_work(host):
+    srv = start([make_device()], host=host)
+    try:
+        with HartIPClient("127.0.0.1", srv.port, timeout=2.0) as c:
+            assert c.handle(0).read_variables().pv_unit == 12
+        with HartIPClient("127.0.0.1", srv.port, transport="udp", timeout=2.0) as c:
+            assert c.handle(0).read_variables().pv_unit == 12
+    finally:
+        srv.stop()
+
+
+def test_udp_client_localhost_reaches_ipv4_server(server):
+    with HartIPClient("localhost", server.port, transport="udp", timeout=2.0) as c:
+        assert c.handle(0).read_variables().pv_unit == 12
 
 
 def test_no_response_not_consumed_by_ignored_request(server):

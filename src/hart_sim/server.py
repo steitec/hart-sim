@@ -94,7 +94,6 @@ class Server:
             return
         self._stopping.set()
         with self._send_cond:
-            self._send_heap.clear()  # unsent delayed replies are dropped
             self._send_cond.notify_all()
         self._tcp.shutdown()
         self._tcp.server_close()
@@ -102,6 +101,8 @@ class Server:
         for thread in self._threads + self._tcp.handler_threads():
             thread.join(timeout=5)
         self._threads.clear()
+        with self._send_cond:
+            self._send_heap.clear()  # unsent delayed replies are dropped (after all pushers ended)
         self._udp.close()
         self._tcp = self._udp = None
         with self._lock:
@@ -285,8 +286,7 @@ class _TcpServer(socketserver.ThreadingTCPServer):
         self._conn_lock = threading.Lock()
         self._conns: set[socket.socket] = set()
         self._handlers: list[threading.Thread] = []
-        self.address_family = socket.getaddrinfo(
-            address[0], address[1], type=socket.SOCK_STREAM)[0][0]
+        self.address_family = hartip.resolve(address[0], address[1], socket.SOCK_STREAM)[0]
         super().__init__(address, handler)
 
     def server_bind(self) -> None:
