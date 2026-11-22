@@ -27,4 +27,4 @@ def register(number: int, *, write: bool = False):
     return deco
 
 
-from . import common, universal  # noqa: E402,F401  (registers commands on import)
+from . import burst, common, universal  # noqa: E402,F401  (registers commands on import)

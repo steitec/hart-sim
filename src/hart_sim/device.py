@@ -7,6 +7,7 @@ import time
 
 from . import commands
 from .commands import NoResponse, ShortData
+from .commands.burst import initial_messages
 from .frame import Address, Frame, pack_ascii
 from .faults import FaultSet
 from .process import I_MAX, I_MIN, LoopState, Variable, loop_current
@@ -45,6 +46,7 @@ class Device:
         self.reset_pending = False  # command 42: re-arm cold start after the reply
         self.more_status_pending = False  # "more status available" until command 48
         self.faults = FaultSet(self)
+        self.burst = initial_messages(self)
         self._cold_start = {_PRIMARY: True, _SECONDARY: True}
         self._config_changed = {_PRIMARY: False, _SECONDARY: False}
         # Reentrant: handle() holds it while handlers call loop()/status_byte().
@@ -61,6 +63,10 @@ class Device:
     @property
     def unique_id(self) -> tuple[int, int]:
         return self.profile.device_type, self.device_id
+
+    @property
+    def burst_on(self) -> bool:
+        return any(m.on for m in self.burst)
 
     def rearm_cold_start(self) -> None:
         with self.lock:
@@ -129,8 +135,9 @@ class Device:
 
     def _reply_address(self, request: Frame, primary: bool) -> Address:
         if request.address.is_broadcast:
-            return Address.long(*self.unique_id, primary)
-        return Address(request.address.polling, request.address.unique_id, primary)
+            return Address.long(*self.unique_id, primary, burst=self.burst_on)
+        return Address(request.address.polling, request.address.unique_id, primary,
+                       self.burst_on)
 
     def handle(self, request: Frame) -> Frame | None:
         """Answer a request. no_response and delay faults are the server's business."""

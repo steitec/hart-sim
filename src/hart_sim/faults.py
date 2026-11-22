@@ -22,6 +22,8 @@ more_status     bytes (list of 6 ints, 0-255)                "more status availa
                                                              specific status
 drift           per_second (finite)                          the PV drifts by ``per_second`` units/s;
                                                              ``clear`` removes it
+burst_stop      -                                            burst mode is suspended (no burst frames) until
+                                                             cleared; the configuration is untouched
 write_protect   on (bool)                                    sets ``Device.write_protect``; one-shot
 ==============  ===========================================  ================================================
 """
@@ -141,6 +143,7 @@ FAULTS: dict[str, dict[str, tuple[Any, Callable[[Any], Any]]]] = {
     "cold_start": {},
     "more_status": {"bytes": (_REQUIRED, _six_bytes)},
     "drift": {"per_second": (_REQUIRED, _number)},
+    "burst_stop": {},
     "write_protect": {"on": (_REQUIRED, _bool)},
 }
 FAULT_KINDS = tuple(FAULTS)

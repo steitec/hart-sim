@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from . import units
+from .burst import BURSTABLE, MESSAGES, MIN_PERIOD, SLOT_OF_CODE, SLOTS, TRIGGER_NAMES, UNUSED_SLOT
 from .frame import pack_ascii
 
 _PROFILE_DIR = Path(__file__).parent / "profiles"
@@ -58,14 +59,16 @@ class Profile:
     alarm: str = "high"
     sv: VariableSpec | None = None
     loop_current: str = "enabled"  # "enabled" | "fixed" (multidrop, 4 mA)
+    burst: tuple[dict, ...] = ()  # validated burst-message entries, see _burst
 
 
 _TOP_KEYS = {
     "kind", "manufacturer_id", "device_type", "device_revision", "software_revision",
     "hardware_revision", "tag", "long_tag", "descriptor", "message", "pv", "sv",
     "sensor_limits", "range", "min_span", "damping", "alarm",
-    "loop_current",
+    "loop_current", "burst",
 }
+_BURST_KEYS = {"command", "period", "max_period", "variables", "trigger", "level", "enabled"}
 _PV_KEYS = {"name", "unit", "source", "sensor_limits", "range", "damping"}
 _SV_KEYS = {"name", "unit", "source"}
 _PV_TO_TOP = ("sensor_limits", "range", "damping")
@@ -154,6 +157,57 @@ def _variable(raw: Any, key: str, allowed: set[str], default_name: str) -> Varia
     return VariableSpec(name, unit, sources)
 
 
+def _burst(raw: Any, has_sv: bool) -> tuple[dict, ...]:
+    """Validate the optional ``burst:`` list (same rules as commands 103-109)."""
+    if not isinstance(raw, list):
+        raise ProfileError(f"burst: expected a list, got {raw!r}")
+    if len(raw) > MESSAGES:
+        raise ProfileError(f"burst: at most {MESSAGES} entries, got {len(raw)}")
+    entries = []
+    for i, item in enumerate(raw):
+        key = f"burst[{i}]"
+        if not isinstance(item, dict):
+            raise ProfileError(f"{key}: expected a mapping, got {item!r}")
+        for k in item:
+            if k not in _BURST_KEYS:
+                raise ProfileError(f"{key}.{k}: unknown key")
+        entry: dict[str, Any] = {}
+        if "command" in item:
+            entry["command"] = _int(item["command"], f"{key}.command", 0, 0xFFFF)
+            if entry["command"] not in BURSTABLE:
+                raise ProfileError(f"{key}.command: must be one of {list(BURSTABLE)}")
+        for k in ("period", "max_period"):
+            if k in item:
+                entry[k] = _num(item[k], f"{key}.{k}")
+        if "period" in entry and entry["period"] < MIN_PERIOD:
+            raise ProfileError(f"{key}.period: must be >= {MIN_PERIOD} s")
+        if "max_period" in entry and entry["max_period"] < entry.get("period", MIN_PERIOD):
+            raise ProfileError(f"{key}.max_period: must not be below period")
+        if "variables" in item:
+            slots = item["variables"]
+            if not isinstance(slots, list) or len(slots) > SLOTS:
+                raise ProfileError(f"{key}.variables: expected a list of up to {SLOTS} slot codes")
+            for code in slots:
+                code = _int(code, f"{key}.variables", 0, 255)
+                if code != UNUSED_SLOT and SLOT_OF_CODE.get(code, -1) not in (
+                        (0, 1) if has_sv else (0,)):
+                    raise ProfileError(f"{key}.variables: unknown slot code {code}")
+            entry["variables"] = list(slots)
+        if "trigger" in item:
+            if item["trigger"] not in TRIGGER_NAMES:
+                raise ProfileError(
+                    f"{key}.trigger: must be one of {', '.join(TRIGGER_NAMES)}, got {item['trigger']!r}")
+            entry["trigger"] = item["trigger"]
+        if "level" in item:
+            entry["level"] = _num(item["level"], f"{key}.level")
+        if "enabled" in item:
+            if not isinstance(item["enabled"], bool):
+                raise ProfileError(f"{key}.enabled: expected true or false, got {item['enabled']!r}")
+            entry["enabled"] = item["enabled"]
+        entries.append(entry)
+    return tuple(entries)
+
+
 def _build(raw: dict[str, Any]) -> Profile:
     for k in raw:
         if k not in _TOP_KEYS:
@@ -215,6 +269,8 @@ def _build(raw: dict[str, Any]) -> Profile:
     if raw.get("sv") is not None:
         sv = _variable(raw["sv"], "sv", _SV_KEYS, "secondary variable")
 
+    burst = _burst(raw["burst"], sv is not None) if "burst" in raw else ()
+
     return Profile(
         kind=raw["kind"],
         manufacturer_id=_int(raw["manufacturer_id"], "manufacturer_id", 0, 0xFFFF),
@@ -234,6 +290,7 @@ def _build(raw: dict[str, Any]) -> Profile:
         alarm=alarm,
         sv=sv,
         loop_current=loop_current,
+        burst=burst,
     )
 
 
