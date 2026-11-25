@@ -14,6 +14,7 @@ from . import hartip
 from .frame import Address, Frame, FrameError, pack_ascii, pack_float, unpack_ascii, unpack_float
 
 _DEFAULT_INACTIVITY_MS = 60_000
+_MIN_KEEP_ALIVE_S = 0.5  # floor for the Keep Alive interval (a server may grant 0 ms)
 _POLL_TIMEOUT = 0.2
 
 # Subscription flags of command 533 (same values as hart_sim.server; the client does not import
@@ -262,14 +263,15 @@ class HartIPClient:
         Publishes of other commands stay queued. Raises HartTimeout.
 
         While waiting, a Keep Alive goes out whenever no request was sent for half the
-        negotiated inactivity time, so a listening session is not closed by the server."""
+        negotiated inactivity time (at most every 0.5 s), so a listening session is not
+        closed by the server."""
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         while True:
             for item in self.publishes:
                 if command is None or item.frame.command == command:
                     self.publishes.remove(item)
                     return item
-            keep_alive_at = self._last_sent + self._inactivity_s / 2
+            keep_alive_at = self._last_sent + max(self._inactivity_s / 2, _MIN_KEEP_ALIVE_S)
             try:
                 header, payload = self._read_message(min(deadline, keep_alive_at))
             except HartTimeout:
@@ -419,9 +421,11 @@ class DeviceHandle:
               level: float = 0.0) -> None:
         """Configure burst `message` and switch it on: 108, 107 (if `variables`), 103, 104,
         109. 104 is always sent, so `trigger` 0 (continuous) resets an earlier trigger mode.
-        `variables=None` keeps the device's current slots. `max_period` defaults to 60 s (at least `period`). A trigger
-        needs the unit and classification of the message's first variable, which are read
-        from the device (commands 3 and 8). Response code 8 (times adjusted) is accepted."""
+        `variables=None` keeps the device's current slots. `max_period` defaults to 60 s
+        (at least `period`). A trigger needs the unit and classification of the message's
+        first variable, which are read from the device (commands 3 and 8, and 105 for kept
+        slots) before anything is written. Bad arguments raise ValueError before any command
+        goes out. Response code 8 (times adjusted) is accepted."""
         if not (math.isfinite(period) and period > 0):
             raise ValueError("period must be a finite number greater than 0")
         if max_period is not None and not (math.isfinite(max_period) and max_period > 0):
@@ -430,21 +434,28 @@ class DeviceHandle:
             raise ValueError("command must be 0-65535")
         if not 0 <= message <= 255:
             raise ValueError("message must be 0-255")
-        index = bytes([message])
-        self._ok(108, command.to_bytes(2, "big") + index)
         if variables is not None:
             if len(variables) > 8:
                 raise ValueError("a burst message has at most 8 device variable slots")
+            if not all(0 <= code <= 255 for code in variables):
+                raise ValueError("device variable codes must be 0-255")
+            if trigger and not variables:
+                raise ValueError("a trigger needs a device variable in the first slot")
+        if trigger:  # read before anything is written, so a bad trigger changes nothing
+            first = variables[0] if variables else self.burst_config(message).slots[0]
+            if first == _UNUSED_SLOT:
+                raise ValueError("a trigger needs a device variable in the first slot")
+            unit, klass = self._slot_unit_class(first)
+        else:  # continuous: the device checks neither classification nor unit
+            unit, klass = _UNUSED_SLOT, 0
+        index = bytes([message])
+        self._ok(108, command.to_bytes(2, "big") + index)
+        if variables is not None:
             self._ok(107, bytes(list(variables) + [_UNUSED_SLOT] * (8 - len(variables))) + index)
         if max_period is None:
             max_period = max(period, _DEFAULT_MAX_PERIOD)
         self._ok(103, index + _to_time(period).to_bytes(4, "big")
                  + _to_time(max_period).to_bytes(4, "big"), accept=(0, _WARNING_ADJUSTED))
-        if trigger:
-            first = variables[0] if variables else self.burst_config(message).slots[0]
-            unit, klass = self._slot_unit_class(first)
-        else:  # continuous: the device checks neither classification nor unit
-            unit, klass = _UNUSED_SLOT, 0
         self._ok(104, bytes([message, trigger, klass, unit]) + pack_float(level))
         self._ok(109, bytes([1]) + index)
 

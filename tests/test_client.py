@@ -165,8 +165,10 @@ def _reply_message(seq, msg_type=hartip.RESPONSE, data=b"\x07"):
     return hartip.encode_message(msg_type, hartip.PDU, seq, frame)
 
 
-def _fake_server(on_pdu):
-    """One-session HART-IP server; `on_pdu(header)` returns the messages to send for a PDU."""
+def _fake_server(on_pdu, inactivity_ms=60_000, keep_alives=None):
+    """One-session HART-IP server; `on_pdu(header)` returns the messages to send for a PDU.
+    It accepts `inactivity_ms` in Session Initiate and appends the time of each Keep Alive
+    to `keep_alives` (when given)."""
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
@@ -185,7 +187,12 @@ def _fake_server(on_pdu):
                 buf = buf[header.byte_count:]
                 if header.msg_id == hartip.SESSION_INITIATE:
                     conn.sendall(hartip.encode_message(hartip.RESPONSE, header.msg_id,
-                                                       header.sequence, b"\x01\x00\x00\xea\x60"))
+                                                       header.sequence,
+                                                       b"\x01" + inactivity_ms.to_bytes(4, "big")))
+                elif header.msg_id == hartip.KEEP_ALIVE and keep_alives is not None:
+                    keep_alives.append(time.monotonic())
+                    conn.sendall(hartip.encode_message(hartip.RESPONSE, header.msg_id,
+                                                       header.sequence, b""))
                 elif header.msg_id == hartip.PDU:
                     for message in on_pdu(header):
                         conn.sendall(message)
@@ -342,3 +349,39 @@ def test_burst_argument_validation(single):
             with pytest.raises(ValueError):
                 handle.burst(**kwargs)
         assert not next(iter(single.devices.values())).burst_on  # nothing was sent
+
+
+def test_wait_burst_does_not_spin_when_the_server_grants_no_inactivity_time():
+    # A gateway that answers Session Initiate with 0 ms must not get a Keep Alive flood.
+    keep_alives = []
+    srv = _fake_server(lambda h: [], inactivity_ms=0, keep_alives=keep_alives)
+    with HartIPClient("127.0.0.1", srv.getsockname()[1], timeout=1.0) as client:
+        with pytest.raises(HartTimeout):
+            client.wait_burst(timeout=1.2)
+    srv.close()
+    assert 1 <= len(keep_alives) <= 3
+
+
+def test_burst_rejects_bad_slots_before_sending_anything(single):
+    dev = next(iter(single.devices.values()))
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        before = handle.burst_config()
+        for variables in ([0] * 9, [256], [-1], [0, 300]):
+            with pytest.raises(ValueError):
+                handle.burst(48, 1.0, variables=variables)
+        with pytest.raises(ValueError, match="trigger"):
+            handle.burst(48, 1.0, variables=[], trigger=2)
+        assert handle.burst_config() == before  # no 108/107 reached the device
+        assert not dev.burst_on
+
+
+def test_burst_trigger_on_an_unused_first_slot_raises(single):
+    with _burst_client(single) as client:
+        handle = client.handle(0)
+        handle.burst(3, 1.0, variables=[], message=1)  # all slots unused
+        before = handle.burst_config(1)
+        with pytest.raises(ValueError, match="trigger"):
+            handle.burst(48, 2.0, trigger=2, message=1)  # keeps the (unused) slots
+        assert handle.burst_config(1) == before  # nothing was written
+        handle.burst_off(1)
