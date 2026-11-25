@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Client: `wait_burst()` no longer floods the server with Keep Alive messages when the
+  Session Initiate reply grants an inactivity time of 0 ms; Keep Alive goes out at most every
+  0.5 s
+- Client: `DeviceHandle.burst()` checks the device variable slots (at most 8, codes 0-255)
+  before it sends anything, so a bad slot list no longer leaves a half-configured burst message
+- Client: `DeviceHandle.burst()` with a trigger and no device variable in the first slot
+  (`variables=[]`, or kept slots that are unused) raises ValueError instead of reading the
+  unused slot 250 as PV; the reads for the trigger now happen before any write
+
 ## 0.2.0 - 2026-11-23
 
 ### Added
